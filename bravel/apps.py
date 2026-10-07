@@ -69,17 +69,43 @@ def find_steam_game(app_id: str, roots: list[Path] | None = None) -> SteamGame |
 def game_plan(prompt: str, shell: str) -> Plan | None:
     if not re.search(r"\b(открой|запусти|open|launch|start)\b", prompt, re.I):
         return None
-    if not re.search(r"\b(кс|кс2|cs|cs2|counter[ -]?strike)\b", prompt, re.I):
-        return None
-    game = find_steam_game("730")
+    known = re.search(r"\b(кс|кс2|cs|cs2|counter[ -]?strike)\b", prompt, re.I)
+    app_id = "730" if known else ("548430" if re.search(r"deep\s+rock\s+galactic|дип\s+рок|\bdrg\b", prompt, re.I) else None)
+    game = find_steam_game(app_id) if app_id else None
+    if app_id is None:
+        # Match actual manifest names, rather than guessing an app ID from the model.
+        for root in steam_roots():
+            libraries = [root]
+            try:
+                libraries += [Path(value.replace("\\\\", "\\")) for value in re.findall(r'"path"\s*"([^"\n]+)"', (root / "steamapps/libraryfolders.vdf").read_text(encoding="utf-8", errors="replace"))]
+            except OSError:
+                pass
+            for library in libraries:
+                for manifest in list((library / "steamapps").glob("appmanifest_*.acf"))[:500]:
+                    try:
+                        name = re.search(r'"name"\s*"([^"\n]+)"', manifest.read_text(encoding="utf-8", errors="replace"))
+                        identifier = re.fullmatch(r"appmanifest_(\d+)\.acf", manifest.name)
+                        if name and identifier and name[1].casefold() in prompt.casefold():
+                            game = find_steam_game(identifier[1], [root])
+                            if game:
+                                break
+                    except OSError:
+                        continue
+                if game:
+                    break
+            if game:
+                break
+        if not game:
+            return None
     if not game:
-        return Plan("Counter-Strike не найден в доступных библиотеках Steam. Проверьте установку Steam и игры; для нестандартного клиента укажите путь в запросе.", ())
+        title = "Counter-Strike" if app_id == "730" else "Deep Rock Galactic"
+        return Plan(f"{title} не найден в доступных библиотеках Steam. Проверьте установку Steam и игры; для нестандартного клиента укажите путь в запросе.", ())
     if shell == "powershell":
         path = str(game.executable).replace("'", "''")
         command = f"Start-Process -FilePath '{path}' -ArgumentList '-applaunch', '{game.app_id}'"
     elif shell == "bash":
-        command = f"{shlex.quote(str(game.executable))} -applaunch {game.app_id}"
+        command = (f"xdg-open steam://rungameid/{game.app_id}" if shutil.which("xdg-open")
+                   else f"{shlex.quote(str(game.executable))} -applaunch {game.app_id}")
     else:
-        # CMD escaping is intentionally not inferred from a user-controlled path.
-        return None
+        command = f"start steam://rungameid/{game.app_id}"
     return Plan(f"Найдена игра: {game.name}\nБиблиотека: {game.library}", (Step(command, "Запустить установленную игру через Steam. Steam может обновить игру перед запуском."),))

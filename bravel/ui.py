@@ -35,12 +35,13 @@ class UI:
         self.write(self.paint("  ✕ " + message, "91"))
 
     def panel(self, title: str, body: str, tone: str = "96") -> None:
-        width = max(30, min(shutil.get_terminal_size((88, 24)).columns - 4, 100))
-        self.write(self.paint("  ╭─ " + title + " " + "─" * max(0, width - len(title) - 4), tone))
+        width = max(12, min(shutil.get_terminal_size((88, 24)).columns - 3, 100))
+        title = safe_text(title).replace("\n", " ")[:width - 6]
+        self.write(self.paint("  ╭─ " + title + " " + "─" * (width - len(title) - 5) + "╮", tone))
         for line in safe_text(body).splitlines():
             for part in textwrap.wrap(line, width - 4, replace_whitespace=False, drop_whitespace=False) or [""]:
-                self.write(self.paint("  │ ", tone) + part)
-        self.write(self.paint("  ╰" + "─" * (width - 1), tone))
+                self.write(self.paint("  │ ", tone) + part.ljust(width - 4) + self.paint(" │", tone))
+        self.write(self.paint("  ╰" + "─" * (width - 2) + "╯", tone))
 
     def confirm(self, *, dangerous: bool = False) -> bool:
         if not sys.stdin.isatty():

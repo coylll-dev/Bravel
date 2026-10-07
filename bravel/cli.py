@@ -13,6 +13,7 @@ from .executor import approve, execute, script_for
 from .planner import Planner, local_fix
 from .ui import UI
 from .setup import configure, managed_action
+from .agent import Agent
 
 
 def parser() -> argparse.ArgumentParser:
@@ -39,6 +40,10 @@ def parser() -> argparse.ArgumentParser:
     cmd = sub.add_parser("integration", help="Вывести путь к скрипту подключения")
     cmd.add_argument("shell", choices=("powershell", "bash"))
     sub.add_parser("demo", help="Показать интерфейс без API и запуска команд")
+    sub.add_parser("desktop", help="Открыть графический интерфейс")
+    cmd = sub.add_parser("agent", help="Диалог с анализом результатов команд")
+    cmd.add_argument("--shell", choices=("powershell", "bash", "cmd"))
+    cmd.add_argument("text", nargs="+")
     return result
 
 
@@ -49,6 +54,24 @@ def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     ui = UI(stream=None if getattr(args, "emit_command", False) else sys.stdout, terminal=sys.stdin.isatty())
     try:
+        if args.action == "desktop":
+            from .desktop import launch
+            return launch()
+        if args.action == "agent":
+            agent = Agent(cwd=Path.cwd(), shell=args.shell)
+            result = agent.make_plan(" ".join(args.text))
+            while True:
+                from .planner import Plan, Step
+                plan = Plan(result["summary"], tuple(Step(s["command"], s["explanation"], s["risk"]) for s in result["steps"]))
+                steps = approve(plan, ui)
+                if not steps:
+                    return 0
+                output = agent.execute(result["plan_id"], approval="RUN" if result["dangerous"] else "approve")
+                for item in output["results"]:
+                    ui.panel(f"РЕЗУЛЬТАТ · код {item['exit_code']}", item["output"] or "Команда завершилась без вывода.")
+                if output["cancelled"]:
+                    return 1
+                result = agent.make_plan("", continuation=True)
         if args.action == "configure":
             return configure(args.provider, args.path, ui)
         if args.action in {"update", "uninstall"}:

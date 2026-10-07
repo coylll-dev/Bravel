@@ -72,6 +72,8 @@ def execute(steps: tuple[Step, ...], shell: str, ui: UI) -> int:
         return 0
     ui.note("Запуск подтверждённого плана…")
     try:
-        return subprocess.run(shell_argv(shell, script_for(steps, shell)), check=False).returncode
+        code = subprocess.run(shell_argv(shell, script_for(steps, shell)), check=False).returncode
+        ui.note(f"Команды завершились с кодом {code}.")
+        return code
     except OSError as exc:
         raise ConsoleError("Не удалось запустить оболочку") from exc

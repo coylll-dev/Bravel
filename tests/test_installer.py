@@ -5,6 +5,7 @@ import json
 import os
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -20,6 +21,31 @@ class Terminal(io.StringIO):
 
 
 class InstallerTests(unittest.TestCase):
+    def test_local_desktop_build_is_installed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "app"
+            source = Path(directory) / "publish"
+            root.mkdir()
+            source.mkdir()
+            name = "Bravel.Desktop.exe" if os.name == "nt" else "Bravel.Desktop"
+            (source / name).write_bytes(b"test binary")
+            with patch("sys.stdout", io.StringIO()):
+                install.install_desktop(root, Path("python"), source)
+            self.assertEqual((root / "desktop" / name).read_bytes(), b"test binary")
+
+    def test_desktop_archive_cannot_escape_install_directory(self):
+        archive = io.BytesIO()
+        with zipfile.ZipFile(archive, "w") as file:
+            file.writestr("../escaped.txt", "bad")
+        archive.seek(0)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch("install.platform.machine", return_value="x86_64"), patch("install.subprocess.run") as version, patch("install.urlopen", return_value=archive):
+                version.return_value.stdout = "0.3.0\n"
+                with self.assertRaisesRegex(RuntimeError, "Небезопасный путь"):
+                    install.install_desktop(root, Path("python"))
+            self.assertFalse((root / "escaped.txt").exists())
+
     def test_installer_leaves_provider_selection_to_wizard_unless_explicit(self):
         python = Path("python")
         self.assertEqual(install.configure_command(python, None), ["python", "-m", "bravel", "configure"])

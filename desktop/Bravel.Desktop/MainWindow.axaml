@@ -1,0 +1,84 @@
+<Window xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="Bravel.Desktop.MainWindow" Title="Bravel" Width="780" Height="760"
+        MinWidth="600" MinHeight="540" WindowStartupLocation="CenterScreen"
+        WindowDecorations="None" TransparencyLevelHint="AcrylicBlur, Transparent"
+        Background="Transparent" CanResize="True">
+  <Border Margin="12" CornerRadius="30" BorderThickness="1" ClipToBounds="True" BoxShadow="0 14 50 0 #70000000">
+    <Border.BorderBrush><LinearGradientBrush StartPoint="0%,0%" EndPoint="100%,100%"><GradientStop Color="#99FFFFFF" Offset="0"/><GradientStop Color="#12FFFFFF" Offset="0.5"/><GradientStop Color="#50A0B4FF" Offset="1"/></LinearGradientBrush></Border.BorderBrush>
+    <Border.Background><LinearGradientBrush StartPoint="0%,0%" EndPoint="100%,100%"><GradientStop Color="#EF20263E" Offset="0"/><GradientStop Color="#E8161B30" Offset="0.55"/><GradientStop Color="#EE202D36" Offset="1"/></LinearGradientBrush></Border.Background>
+    <Grid RowDefinitions="Auto,*,Auto,Auto" Margin="26,18,26,24">
+      <Grid ColumnDefinitions="*,Auto" PointerPressed="DragWindow">
+        <StackPanel Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+          <Border Width="36" Height="36" CornerRadius="13" Background="#23C1CCFF" BorderBrush="#40DBE0FF" BorderThickness="1">
+            <TextBlock Text="◆" Foreground="#E5E8FF" FontSize="20" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+          </Border>
+          <StackPanel Spacing="1"><TextBlock Text="Bravel" FontWeight="SemiBold" FontSize="17"/><TextBlock x:Name="ProviderLabel" Text="Твой агент на компьютере" FontSize="11" Foreground="#939EBE"/></StackPanel>
+        </StackPanel>
+        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6">
+          <Button x:Name="SettingsButton" Content="Настройки" Click="OpenSettings" FontSize="12" Padding="12,8" />
+          <Button x:Name="NewButton" Content="＋" Click="NewChat" ToolTip.Tip="Новый диалог" Padding="10,8" />
+          <Button Content="—" Click="Minimize" Padding="10,8" />
+          <Button Content="×" Click="CloseWindow" Padding="10,8" />
+        </StackPanel>
+      </Grid>
+      <Grid Grid.Row="1" Margin="0,24,0,16">
+        <StackPanel x:Name="Welcome" VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="16" Margin="12">
+          <Border Width="76" Height="76" CornerRadius="28" BorderBrush="#65D7DDFF" BorderThickness="1" BoxShadow="0 0 40 0 #35A7A6FF">
+            <Border.Background><LinearGradientBrush StartPoint="0%,0%" EndPoint="100%,100%"><GradientStop Color="#506E76C6"/><GradientStop Color="#193EC6CF" Offset="1"/></LinearGradientBrush></Border.Background>
+            <TextBlock Text="✦" FontSize="40" Foreground="#ECEDFF" HorizontalAlignment="Center" VerticalAlignment="Center" />
+          </Border>
+          <TextBlock Text="Что сделаем?" FontSize="32" FontWeight="SemiBold" HorizontalAlignment="Center" />
+          <TextBlock Text="Спроси, найди или запусти. Я покажу действия&#10;и дождусь твоего подтверждения." TextAlignment="Center" Foreground="#A7B1CE" FontSize="14" LineHeight="23"/>
+          <WrapPanel HorizontalAlignment="Center" Margin="0,10,0,0">
+            <Button Content="Запусти Deep Rock Galactic" Click="UseSuggestion" Margin="4" FontSize="12"/>
+            <Button Content="Покажи сетевые подключения" Click="UseSuggestion" Margin="4" FontSize="12"/>
+            <Button Content="Что занимает место на диске?" Click="UseSuggestion" Margin="4" FontSize="12"/>
+          </WrapPanel>
+        </StackPanel>
+        <ScrollViewer x:Name="HistoryScroll" IsVisible="False" HorizontalScrollBarVisibility="Disabled">
+          <StackPanel x:Name="Messages" Spacing="14" Margin="0,0,6,8"/>
+        </ScrollViewer>
+      </Grid>
+      <StackPanel Grid.Row="2" Spacing="12">
+        <Border x:Name="ApprovalPanel" IsVisible="False" Background="#18C8D5FF" BorderBrush="#35C8D5FF" BorderThickness="1" CornerRadius="20" Padding="16">
+          <StackPanel Spacing="10">
+            <TextBlock x:Name="ApprovalLabel" Text="Разрешить показанные команды?" FontSize="13" TextWrapping="Wrap" />
+            <TextBox x:Name="RiskInput" IsVisible="False" PlaceholderText="Введите RUN для повышенного риска" />
+            <StackPanel Orientation="Horizontal" Spacing="8">
+              <Button x:Name="ApproveButton" Classes="primary" Content="Выполнить" Click="Approve" />
+              <Button Content="Отменить" Click="Decline" />
+            </StackPanel>
+          </StackPanel>
+        </Border>
+        <Button x:Name="ContinueButton" IsVisible="False" Content="Проанализировать результат и продолжить" Click="ContinueAgent" HorizontalAlignment="Left" FontSize="12" />
+        <Border CornerRadius="24" BorderBrush="#45DAE1FF" BorderThickness="1" Background="#18FFFFFF" Padding="8" BoxShadow="0 0 28 0 #0FA3BAFF">
+          <Grid ColumnDefinitions="*,Auto" VerticalAlignment="Center">
+            <TextBox x:Name="PromptInput" PlaceholderText="Напиши, что нужно сделать…" Background="Transparent" BorderThickness="0" FontSize="15" MinHeight="46" MaxHeight="130" TextWrapping="Wrap" AcceptsReturn="True" KeyDown="PromptKeyDown" />
+            <Button x:Name="SendButton" Grid.Column="1" Content="↑" Classes="primary" FontSize="24" Width="46" Height="46" CornerRadius="18" Padding="0" Click="SendPrompt" VerticalAlignment="Bottom"/>
+          </Grid>
+        </Border>
+      </StackPanel>
+      <Grid Grid.Row="3" ColumnDefinitions="*,Auto" Margin="6,12,6,0">
+        <TextBlock x:Name="StatusLabel" Text="Подключение к агенту…" FontSize="11" Foreground="#939EBE" TextTrimming="CharacterEllipsis"/>
+        <Button x:Name="CancelButton" Grid.Column="1" IsVisible="False" Content="Остановить" Click="Cancel" FontSize="11" Padding="9,3"/>
+      </Grid>
+      <Border x:Name="SettingsPanel" Grid.RowSpan="4" IsVisible="False" Background="#FB20263C" BorderBrush="#50FFFFFF" BorderThickness="1" CornerRadius="24" Padding="24">
+        <ScrollViewer><StackPanel Spacing="14">
+          <TextBlock Text="Подключение к ИИ" FontSize="24" FontWeight="SemiBold" />
+          <TextBlock Text="Общие настройки с консольным Bravel. Ключ остаётся&#10;в пользовательском конфиге и отправляется только выбранному API." Foreground="#A7B1CE" FontSize="12" TextWrapping="Wrap" />
+          <TextBlock Text="Провайдер" FontSize="12" />
+          <ComboBox x:Name="ProviderInput" HorizontalAlignment="Stretch" SelectionChanged="ProviderChanged">
+            <ComboBoxItem Content="OpenAI"/><ComboBoxItem Content="Gemini · Google AI Studio"/><ComboBoxItem Content="OpenRouter"/><ComboBoxItem Content="Другой API / локальная модель"/>
+          </ComboBox>
+          <TextBox x:Name="UrlInput" PlaceholderText="API URL" />
+          <TextBox x:Name="ModelInput" PlaceholderText="Модель" />
+          <TextBox x:Name="KeyInput" PasswordChar="●" PlaceholderText="API-ключ · пусто = сохранить для этого провайдера" />
+          <TextBlock x:Name="ConfigLabel" FontSize="11" Foreground="#939EBE" TextWrapping="Wrap" />
+          <TextBlock Text="Контекст диалога и результаты команд используются&#10;в следующих запросах к выбранной модели." Foreground="#939EBE" FontSize="11" TextWrapping="Wrap" />
+          <StackPanel Orientation="Horizontal" Spacing="10"><Button x:Name="SaveButton" Classes="primary" Content="Сохранить" Click="SaveSettings"/><Button Content="Назад" Click="CloseSettings"/></StackPanel>
+          <TextBlock x:Name="SettingsError" Foreground="#FFB7BD" TextWrapping="Wrap" />
+        </StackPanel></ScrollViewer>
+      </Border>
+    </Grid>
+  </Border>
+</Window>

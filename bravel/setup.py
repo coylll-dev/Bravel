@@ -20,7 +20,8 @@ def configure(provider: str | None, path: Path | None, ui: UI) -> int:
     ui.banner()
     if provider is None:
         ui.panel("ПРОВАЙДЕР", "1 · OpenAI\n2 · Gemini (Google AI Studio)\n3 · OpenRouter\n4 · Другой совместимый API / локальная модель")
-        answer = input("  Провайдер [1]: ").strip() or "1"
+        default = str(list(PROVIDERS).index(current.provider) + 1) if current else "1"
+        answer = input(f"  Провайдер [{default}]: ").strip() or default
         if answer not in {"1", "2", "3", "4"}:
             raise ConsoleError("Выберите провайдера от 1 до 4")
         provider = list(PROVIDERS)[int(answer) - 1]

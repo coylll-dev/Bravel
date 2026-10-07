@@ -85,7 +85,8 @@ class Settings:
 
     @classmethod
     def from_values(cls, values: dict[str, str]) -> Settings:
-        provider = values.get("AI_PROVIDER", "openai").lower()
+        provider = values.get("AI_PROVIDER", "openai").strip().lower()
+        provider = {"google": "gemini", "googleai": "gemini", "google-ai-studio": "gemini"}.get(provider, provider)
         if provider not in PROVIDERS:
             raise ConsoleError("AI_PROVIDER: openai, gemini, openrouter или compatible")
         base_url, model, key_variable = PROVIDERS[provider]

@@ -101,7 +101,40 @@ def load_manifest(root: Path) -> dict:
     return data
 
 
-def install(root: Path, *, source: str | None = None, profiles: list[tuple[str, Path]] | None = None, provider: str = "openai", configure: bool = True) -> None:
+def configure_command(python: Path, provider: str | None) -> list[str]:
+    command = [str(python), "-m", "bravel", "configure"]
+    if provider is not None:
+        command.extend(["--provider", provider])
+    return command
+
+
+def usage_instructions(root: Path, profiles: list[tuple[str, Path]]) -> None:
+    shells = {shell for shell, _ in profiles}
+    if "powershell" in shells:
+        print("  Откройте PowerShell. Из CMD: powershell (или pwsh для PowerShell 7).")
+        print("  Автоматические # запросы и исправления работают в PowerShell; CMD поддерживает только прямой CLI.")
+        if os.name == "nt":
+            for name in ("powershell", "pwsh"):
+                executable = shutil.which(name)
+                if executable:
+                    result = subprocess.run([executable, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "Get-ExecutionPolicy"], capture_output=True, text=True)
+                    if result.returncode == 0 and result.stdout.strip() in {"Restricted", "AllSigned"}:
+                        print(f"  ! {name}: политика {result.stdout.strip()} может блокировать профиль Bravel.")
+                        print("  Если вы разрешаете локальные скрипты, выполните в этой оболочке: Set-ExecutionPolicy -Scope CurrentUser RemoteSigned")
+                        print("  Затем откройте новую сессию PowerShell. Политика не изменялась установщиком.")
+    if "bash" in shells:
+        print("  Откройте новую интерактивную сессию Bash.")
+    if not shells:
+        print("  Подключение оболочки отключено; запускайте CLI из папки venv/Scripts или venv/bin установки.")
+    print('  Проверка: bravel doctor. Запрос: ai "покажи сетевые подключения" или # помоги')
+    print("  Управление: bravel configure, bravel update, bravel uninstall")
+    if os.name == "nt":
+        executable = root / "venv/Scripts/bravel.exe"
+        print(f'  CLI из CMD: "{executable}" ask --shell cmd "помоги"')
+        print(f'  Короткая команда на текущую сессию CMD: doskey bravel="{executable}" $*')
+
+
+def install(root: Path, *, source: str | None = None, profiles: list[tuple[str, Path]] | None = None, provider: str | None = None, configure: bool = True) -> None:
     root = root.expanduser().absolute()
     marker = root / "bravel-install.json"
     previous = load_manifest(root) if marker.exists() else None
@@ -139,9 +172,10 @@ def install(root: Path, *, source: str | None = None, profiles: list[tuple[str, 
     for shell, path in selected:
         write_profile(path, shell_block(root, shell))
         print(f"  ✓ Подключение: {path}")
-    print(f"  ◆ Bravel установлен: {root}\n  Откройте новый терминал. Команды: bravel configure, bravel update, bravel uninstall")
+    print(f"  ◆ Bravel установлен: {root}")
     if configure:
-        subprocess.run([str(python), "-m", "bravel", "configure", "--provider", provider], check=True)
+        subprocess.run(configure_command(python, provider), check=True)
+    usage_instructions(root, selected)
 
 
 def uninstall(root: Path, *, purge: bool = False) -> None:
@@ -207,7 +241,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--shell", choices=("auto", "powershell", "bash"), default="auto")
     parser.add_argument("--profile", type=Path)
     parser.add_argument("--source")
-    parser.add_argument("--provider", choices=("openai", "gemini", "openrouter", "compatible"), default="openai")
+    parser.add_argument("--provider", choices=("openai", "gemini", "openrouter", "compatible"), help="Пропустить выбор провайдера в мастере")
     parser.add_argument("--no-configure", action="store_true")
     parser.add_argument("--no-profile", action="store_true")
     parser.add_argument("--purge", action="store_true")

@@ -23,7 +23,7 @@ def main():
         scripts = root / "venv" / ("Scripts" if os.name == "nt" else "bin")
         executable = scripts / ("bravel.exe" if os.name == "nt" else "bravel")
         result = subprocess.run([str(executable), "--version"], check=True, capture_output=True, encoding="utf-8")
-        assert result.stdout.strip() == "0.2.0"
+        assert result.stdout.strip() == "0.2.1"
         assert (root / "installer.py").is_file()
         assert "# >>> bravel >>>" in profile.read_text(encoding="utf-8-sig")
         # The maintenance helper inherits the pipe; communicate waits until the

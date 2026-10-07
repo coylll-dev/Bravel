@@ -20,6 +20,14 @@ class Terminal(io.StringIO):
 
 
 class InstallerTests(unittest.TestCase):
+    def test_installer_leaves_provider_selection_to_wizard_unless_explicit(self):
+        python = Path("python")
+        self.assertEqual(install.configure_command(python, None), ["python", "-m", "bravel", "configure"])
+        self.assertEqual(install.configure_command(python, "gemini"), ["python", "-m", "bravel", "configure", "--provider", "gemini"])
+        with patch("install.install") as installer:
+            self.assertEqual(install.main(["--no-profile", "--no-configure"]), 0)
+            self.assertIsNone(installer.call_args.kwargs["provider"])
+
     def test_existing_utf16_powershell_profile_is_preserved(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "profile.ps1"
@@ -92,6 +100,24 @@ class InstallerTests(unittest.TestCase):
 
 
 class ProviderSettingsTests(unittest.TestCase):
+    def test_google_provider_aliases_use_native_gemini(self):
+        for alias in ("googleai", "google", "Google-AI-Studio"):
+            settings = Settings.from_values({"AI_PROVIDER": alias, "AI_API_KEY": "test-secret"})
+            self.assertEqual(settings.provider, "gemini")
+            self.assertIn("googleapis.com", settings.base_url)
+
+    def test_interactive_provider_choice_and_reconfigure_preserve_key(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True):
+            path = Path(directory) / ".env"
+            with patch("sys.stdin", Terminal()), patch("builtins.input", side_effect=["2", "", "custom-gemini-model"]), patch("getpass.getpass", return_value="test-secret"):
+                configure(None, path, UI("never", io.StringIO()))
+            with patch("sys.stdin", Terminal()), patch("builtins.input", side_effect=["", "", ""]), patch("getpass.getpass", return_value=""):
+                configure(None, path, UI("never", io.StringIO()))
+            settings = Settings.load(path)
+            self.assertEqual(settings.provider, "gemini")
+            self.assertEqual(settings.model, "custom-gemini-model")
+            self.assertEqual(settings.api_key, "test-secret")
+
     def test_provider_defaults_and_native_key_variables(self):
         for provider, key in (("gemini", "GEMINI_API_KEY"), ("openrouter", "OPENROUTER_API_KEY")):
             with patch.dict(os.environ, {"AI_PROVIDER": provider, key: "test-secret"}, clear=True):

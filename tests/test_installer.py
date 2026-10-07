@@ -20,6 +20,21 @@ class Terminal(io.StringIO):
 
 
 class InstallerTests(unittest.TestCase):
+    def test_user_path_addition_is_idempotent_and_removal_preserves_other_entries(self):
+        directory = Path("C:/Users/User/Bravel/venv/Scripts")
+        original = "%USERPROFILE%/tools;;C:/other/"
+        updated, added = install.path_entries(original, directory)
+        self.assertTrue(added)
+        self.assertEqual(install.path_entries(updated, directory), (updated, False))
+        self.assertEqual(install.path_entries(updated, directory, remove=True), (original, True))
+        self.assertEqual(install.path_entries(original, directory, remove=True), (original, False))
+
+    @unittest.skipUnless(os.name == "nt", "Windows PATH normalization")
+    def test_existing_quoted_path_with_different_case_is_not_owned(self):
+        directory = Path("C:/Users/User/Bravel/venv/Scripts")
+        original = 'C:/other;"c:\\users\\user\\bravel\\venv\\scripts\\"'
+        self.assertEqual(install.path_entries(original, directory), (original, False))
+
     def test_cli_migration_removes_only_known_gui_directory(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

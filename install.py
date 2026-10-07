@@ -108,6 +108,44 @@ def configure_command(python: Path, provider: str | None) -> list[str]:
     return command
 
 
+def path_entries(value: str, directory: Path, *, remove: bool = False) -> tuple[str, bool]:
+    """Edit only the matching PATH entry; retain spelling and empty entries."""
+    normalize = lambda item: os.path.normcase(os.path.normpath(os.path.expandvars(item.strip().strip('"'))))
+    target = normalize(str(directory))
+    entries = value.split(";") if value else []
+    present = any(normalize(item) == target for item in entries)
+    if remove:
+        return ";".join(item for item in entries if normalize(item) != target), present
+    if present:
+        return value, False
+    return value + (";" if value else "") + str(directory), True
+
+
+def windows_user_path(directory: Path, *, remove: bool = False) -> bool:
+    """Persist current user's PATH, retaining its registry type and other entries."""
+    import winreg
+    with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_READ | winreg.KEY_WRITE) as key:
+        try:
+            value, kind = winreg.QueryValueEx(key, "Path")
+        except FileNotFoundError:
+            value, kind = "", winreg.REG_EXPAND_SZ
+        if kind not in (winreg.REG_SZ, winreg.REG_EXPAND_SZ):
+            raise RuntimeError("Неизвестный тип пользовательского PATH; он не изменён")
+        updated, changed = path_entries(value, directory, remove=remove)
+        if changed:
+            winreg.SetValueEx(key, "Path", 0, kind, updated)
+    if changed:
+        import ctypes
+        from ctypes import wintypes
+        send = ctypes.WinDLL("user32", use_last_error=True).SendMessageTimeoutW
+        send.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPCWSTR,
+                         wintypes.UINT, wintypes.UINT, ctypes.POINTER(ctypes.c_size_t)]
+        send.restype = wintypes.LPARAM
+        result = ctypes.c_size_t()
+        send(0xFFFF, 0x001A, 0, "Environment", 0x0002, 2000, ctypes.byref(result))
+    return changed
+
+
 def usage_instructions(root: Path, profiles: list[tuple[str, Path]]) -> None:
     shells = {shell for shell, _ in profiles}
     print("  Диалог агента: bravel chat. Одна задача: bravel agent \"проверь сеть\".")
@@ -130,6 +168,7 @@ def usage_instructions(root: Path, profiles: list[tuple[str, Path]]) -> None:
     print("  Управление: bravel configure, bravel update, bravel uninstall")
     if os.name == "nt":
         executable = root / "venv/Scripts/bravel.exe"
+        print("  Для нового PATH закройте все окна терминала и откройте CMD из меню Пуск.")
         print(f'  CLI из CMD: "{executable}" ask --shell cmd "помоги"')
         print(f'  Короткая команда на текущую сессию CMD: doskey bravel="{executable}" $*')
 
@@ -169,7 +208,7 @@ def remove_legacy_desktop(root: Path, previous: dict | None) -> None:
         remove_desktop_shortcuts(root, previous)
 
 
-def install(root: Path, *, source: str | None = None, profiles: list[tuple[str, Path]] | None = None, provider: str | None = None, configure: bool = True) -> None:
+def install(root: Path, *, source: str | None = None, profiles: list[tuple[str, Path]] | None = None, provider: str | None = None, configure: bool = True, register_path: bool = True) -> None:
     root = root.expanduser().absolute()
     marker = root / "bravel-install.json"
     previous = load_manifest(root) if marker.exists() else None
@@ -183,7 +222,9 @@ def install(root: Path, *, source: str | None = None, profiles: list[tuple[str, 
     for _, path in selected:
         remove_block(profile_text(path))
     root.mkdir(parents=True, exist_ok=True)
-    marker.write_text(json.dumps({"app": "bravel", "root": str(root.resolve()), "profiles": [{"shell": shell, "path": str(path.absolute())} for shell, path in selected], "source": source or SOURCE_URL}, indent=2), encoding="utf-8")
+    manifest = {"app": "bravel", "root": str(root.resolve()), "profiles": [{"shell": shell, "path": str(path.absolute())} for shell, path in selected], "source": source or SOURCE_URL,
+                "register_path": register_path, "path_added": bool(previous and previous.get("path_added"))}
+    marker.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     environment = root / "venv"
     if not environment.exists():
         venv.EnvBuilder(with_pip=True).create(environment)
@@ -207,6 +248,11 @@ def install(root: Path, *, source: str | None = None, profiles: list[tuple[str, 
     for shell, path in selected:
         write_profile(path, shell_block(root, shell))
         print(f"  ✓ Подключение: {path}")
+    if os.name == "nt" and register_path:
+        added = windows_user_path(environment / "Scripts")
+        manifest["path_added"] = manifest["path_added"] or added
+        marker.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        print("  ✓ Bravel доступен через пользовательский PATH в CMD и PowerShell.")
     print(f"  ◆ Bravel установлен: {root}")
     if configure:
         subprocess.run(configure_command(python, provider), check=True)
@@ -222,6 +268,8 @@ def uninstall(root: Path, *, purge: bool = False) -> None:
     for item in manifest["profiles"]:
         write_profile(Path(item["path"]), None)
     remove_desktop_shortcuts(root, manifest)
+    if os.name == "nt" and manifest.get("path_added"):
+        windows_user_path(root / "venv/Scripts", remove=True)
     for attempt in range(20):
         try:
             shutil.rmtree(root)
@@ -281,6 +329,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--provider", choices=("openai", "gemini", "openrouter", "compatible"), help="Пропустить выбор провайдера в мастере")
     parser.add_argument("--no-configure", action="store_true")
     parser.add_argument("--no-profile", action="store_true")
+    parser.add_argument("--no-path", action="store_true", help="Не добавлять CLI в пользовательский PATH Windows")
     parser.add_argument("--purge", action="store_true")
     parser.add_argument("--wait-pid", type=int, help=argparse.SUPPRESS)
     parser.add_argument("--self-remove", action="store_true", help=argparse.SUPPRESS)
@@ -299,7 +348,8 @@ def main(argv: list[str] | None = None) -> int:
                 source = args.source
                 shell = ("powershell" if os.name == "nt" else "bash") if args.shell == "auto" else args.shell
                 selected = [] if args.no_profile else ([(shell, args.profile)] if args.profile else detect_profiles(shell))
-            install(args.prefix, source=source, profiles=selected, provider=args.provider, configure=not args.no_configure and args.action == "install")
+            register_path = not args.no_path and (args.action != "update" or data.get("register_path", True))
+            install(args.prefix, source=source, profiles=selected, provider=args.provider, configure=not args.no_configure and args.action == "install", register_path=register_path)
         if args.self_remove:
             Path(__file__).unlink(missing_ok=True)
         return 0

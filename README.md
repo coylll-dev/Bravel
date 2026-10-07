@@ -103,7 +103,7 @@ bravel fix --shell cmd "cdm"
 bravel configure
 ```
 
-После закрытия CMD повторите `doskey`. Можно всегда использовать полный путь вместо `bravel`. Автоматические `# запросы` и обработка неизвестных команд требуют PowerShell/Bash с загруженным подключением; в CMD вводите `bravel ask` и `bravel fix`. При `Restricted` профиль PowerShell блокируется; установщик сообщит об этом и оставит политику без изменений.
+Начиная с версии 0.4.1 установщик добавляет CLI в пользовательский PATH Windows. После установки закройте все окна терминала и откройте CMD из меню Пуск: `bravel` будет доступен без `doskey`. Макрос выше нужен только для уже открытой сессии или старой установки. Можно всегда использовать полный путь вместо `bravel`. Автоматические `# запросы` и обработка неизвестных команд требуют PowerShell/Bash с загруженным подключением; в CMD вводите `bravel ask` и `bravel fix`. При `Restricted` профиль PowerShell блокируется; установщик сообщит об этом и оставит политику без изменений.
 
 Можно сразу выбрать Gemini: `python install.py --provider gemini`, или OpenRouter: `--provider openrouter`. Без мастера: `--no-configure`; позже запустите `bravel configure`. На Linux без поддержки venv установите пакет `python3-venv` средствами своего дистрибутива.
 
@@ -124,7 +124,7 @@ python install.py update
 python install.py uninstall
 ```
 
-На Linux используйте `python3`. Каталог установки: `%LOCALAPPDATA%/Bravel` на Windows, `$XDG_DATA_HOME/bravel` или `~/.local/share/bravel` на Linux. Можно выбрать `--prefix`, `--shell`, `--profile`, либо установить только CLI с `--no-profile` и запускать его из `venv/Scripts` или `venv/bin` в каталоге установки.
+На Linux используйте `python3`. Каталог установки: `%LOCALAPPDATA%/Bravel` на Windows, `$XDG_DATA_HOME/bravel` или `~/.local/share/bravel` на Linux. Можно выбрать `--prefix`, `--shell`, `--profile`, либо установить только CLI с `--no-profile`. На Windows CLI остаётся доступен через пользовательский PATH; `--no-path` отключает эту настройку. При удалении установщик убирает только добавленную им запись PATH. На Linux подключение PATH идёт через Bash; без профиля используйте полный путь к `venv/bin/bravel`.
 
 Windows подключает найденные PowerShell 7 и Windows PowerShell; Linux — Bash. Zsh/fish и автоматические хуки CMD пока не поддерживаются. Внутренние `.ps1` и `.bash` остаются адаптерами для перехвата `#` и неизвестных команд; пользователю подключать их вручную не нужно. Установщик не меняет политики выполнения PowerShell: если система запрещает профили, используйте CLI по полному пути установки, а для автоматического подключения потребуется разрешённый профиль.
 

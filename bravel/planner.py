@@ -80,26 +80,41 @@ class Planner:
 
     def make_plan(self, prompt: str, context: dict, *, failed: bool = False) -> Plan:
         self.settings.validate_key()
-        payload = {
-            "model": self.settings.model,
-            "messages": [
+        user_content = json.dumps({"request": prompt, "context": context, "command_not_found": failed, "max_steps": self.settings.max_steps}, ensure_ascii=False)
+        headers = {"Content-Type": "application/json", "User-Agent": "bravel/0.2.0"}
+        if self.settings.provider == "gemini":
+            payload = {
+                "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+                "contents": [{"role": "user", "parts": [{"text": user_content}]}],
+            }
+            if self.settings.json_mode:
+                payload["generationConfig"] = {"responseMimeType": "application/json"}
+            if self.settings.api_key:
+                headers["x-goog-api-key"] = self.settings.api_key
+            model = self.settings.model.removeprefix("models/")
+            url = self.settings.base_url + f"/models/{model}:generateContent"
+        else:
+            payload = {"model": self.settings.model, "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": json.dumps({"request": prompt, "context": context, "command_not_found": failed, "max_steps": self.settings.max_steps}, ensure_ascii=False)},
-            ],
-        }
-        if self.settings.json_mode:
-            payload["response_format"] = {"type": "json_object"}
-        headers = {"Content-Type": "application/json", "User-Agent": "bravel/0.1.0"}
-        if self.settings.api_key:
-            headers["Authorization"] = "Bearer " + self.settings.api_key
-        request = Request(self.settings.base_url + "/chat/completions", data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
+                {"role": "user", "content": user_content},
+            ]}
+            if self.settings.json_mode:
+                payload["response_format"] = {"type": "json_object"}
+            if self.settings.api_key:
+                headers["Authorization"] = "Bearer " + self.settings.api_key
+            url = self.settings.base_url + "/chat/completions"
+        request = Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
         try:
             with build_opener(NoRedirect).open(request, timeout=self.settings.timeout) as response:
                 raw = response.read(1_000_001)
                 if len(raw) > 1_000_000:
                     raise ConsoleError("Ответ API слишком большой")
                 data = json.loads(raw)
-            content = data["choices"][0]["message"]["content"]
+            if self.settings.provider == "gemini":
+                parts = data["candidates"][0]["content"]["parts"]
+                content = "".join(part["text"] for part in parts if "text" in part and not part.get("thought"))
+            else:
+                content = data["choices"][0]["message"]["content"]
             if not isinstance(content, str):
                 raise ValueError("empty response")
         except HTTPError as exc:

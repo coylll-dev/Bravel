@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -8,6 +9,19 @@ from urllib.parse import urlsplit
 
 class ConsoleError(Exception):
     """An error safe to display to a terminal user."""
+
+
+PROVIDERS = {
+    "openai": ("https://api.openai.com/v1", "gpt-4o-mini", "OPENAI_API_KEY"),
+    "gemini": ("https://generativelanguage.googleapis.com/v1beta", "gemini-3.8-flash", "GEMINI_API_KEY"),
+    "openrouter": ("https://openrouter.ai/api/v1", "openrouter/auto", "OPENROUTER_API_KEY"),
+    "compatible": ("http://localhost:11434/v1", "your-model", "AI_API_KEY"),
+}
+
+
+def template(provider: str = "openai") -> str:
+    base_url, model, _ = PROVIDERS[provider]
+    return f"AI_PROVIDER={provider}\nAI_API_BASE_URL={base_url}\nAI_API_KEY=your-api-key\nAI_MODEL={model}\nAI_TIMEOUT=45\nAI_JSON_MODE=true\nAI_MAX_STEPS=5\nAI_REQUIRE_KEY=true\nAI_COLOR=auto\n"
 
 
 def config_path() -> Path:
@@ -53,6 +67,7 @@ def boolean(values: dict[str, str], key: str, default: bool) -> bool:
 
 @dataclass(frozen=True)
 class Settings:
+    provider: str = "openai"
     base_url: str = "https://api.openai.com/v1"
     api_key: str = field(default="", repr=False)
     model: str = "gpt-4o-mini"
@@ -66,11 +81,23 @@ class Settings:
     def load(cls, path: Path | None = None) -> Settings:
         values = read_env(path or config_path())
         values.update(os.environ)
+        return cls.from_values(values)
+
+    @classmethod
+    def from_values(cls, values: dict[str, str]) -> Settings:
+        provider = values.get("AI_PROVIDER", "openai").lower()
+        if provider not in PROVIDERS:
+            raise ConsoleError("AI_PROVIDER: openai, gemini, openrouter или compatible")
+        base_url, model, key_variable = PROVIDERS[provider]
+        api_key = values.get("AI_API_KEY", "")
+        if api_key in {"", "your-api-key"}:
+            api_key = values.get(key_variable, api_key)
         try:
             settings = cls(
-                base_url=values.get("AI_API_BASE_URL", cls.base_url).rstrip("/"),
-                api_key=values.get("AI_API_KEY", ""),
-                model=values.get("AI_MODEL", cls.model),
+                provider=provider,
+                base_url=values.get("AI_API_BASE_URL", base_url).rstrip("/"),
+                api_key=api_key,
+                model=values.get("AI_MODEL", model),
                 timeout=float(values.get("AI_TIMEOUT", "45")),
                 json_mode=boolean(values, "AI_JSON_MODE", True),
                 max_steps=int(values.get("AI_MAX_STEPS", "5")),
@@ -90,6 +117,10 @@ class Settings:
             raise ConsoleError("AI_COLOR: auto, always или never")
         if not settings.model.strip():
             raise ConsoleError("AI_MODEL не может быть пустым")
+        if settings.provider == "gemini" and not re.fullmatch(r"(?:models/)?[A-Za-z0-9_.-]+", settings.model):
+            raise ConsoleError("AI_MODEL для Gemini должен быть идентификатором модели")
+        if any(c in settings.api_key for c in "\r\n"):
+            raise ConsoleError("API-ключ не может содержать переносы строк")
         return settings
 
     def validate_key(self) -> None:

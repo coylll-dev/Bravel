@@ -7,11 +7,12 @@ from pathlib import Path
 
 from . import __version__
 from .apps import game_plan
-from .config import ConsoleError, Settings, config_path
+from .config import ConsoleError, Settings, PROVIDERS, config_path, template
 from .context import context, shell_name
 from .executor import approve, execute, script_for
 from .planner import Planner, local_fix
 from .ui import UI
+from .setup import configure, managed_action
 
 
 def parser() -> argparse.ArgumentParser:
@@ -28,6 +29,13 @@ def parser() -> argparse.ArgumentParser:
     sub.add_parser("doctor", help="Проверить локальные настройки без запроса к API")
     cmd = sub.add_parser("init", help="Создать шаблон конфигурации")
     cmd.add_argument("--path", type=Path, help="Путь к новому .env")
+    cmd.add_argument("--provider", choices=tuple(PROVIDERS), default="openai")
+    cmd = sub.add_parser("configure", help="Мастер настройки API")
+    cmd.add_argument("--provider", choices=tuple(PROVIDERS))
+    cmd.add_argument("--path", type=Path)
+    sub.add_parser("update", help="Обновить управляемую установку")
+    cmd = sub.add_parser("uninstall", help="Удалить Bravel и подключение")
+    cmd.add_argument("--purge", action="store_true", help="Также удалить стандартный .env")
     cmd = sub.add_parser("integration", help="Вывести путь к скрипту подключения")
     cmd.add_argument("shell", choices=("powershell", "bash"))
     sub.add_parser("demo", help="Показать интерфейс без API и запуска команд")
@@ -39,8 +47,12 @@ def main(argv: list[str] | None = None) -> int:
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
     args = parser().parse_args(argv)
-    ui = UI()
+    ui = UI(stream=None if getattr(args, "emit_command", False) else sys.stdout, terminal=sys.stdin.isatty())
     try:
+        if args.action == "configure":
+            return configure(args.provider, args.path, ui)
+        if args.action in {"update", "uninstall"}:
+            return managed_action(args.action, purge=getattr(args, "purge", False), ui=ui)
         if args.action == "integration":
             suffix = "ps1" if args.shell == "powershell" else "bash"
             print(Path(__file__).parent / "integrations" / f"bravel.{suffix}")
@@ -50,7 +62,7 @@ def main(argv: list[str] | None = None) -> int:
             path.parent.mkdir(parents=True, exist_ok=True)
             try:
                 with path.open("x", encoding="utf-8") as file:
-                    file.write("AI_API_BASE_URL=https://api.openai.com/v1\nAI_API_KEY=your-api-key\nAI_MODEL=gpt-4o-mini\nAI_TIMEOUT=45\nAI_JSON_MODE=true\nAI_MAX_STEPS=5\nAI_REQUIRE_KEY=true\nAI_COLOR=auto\n")
+                    file.write(template(args.provider))
                 if os.name != "nt":
                     path.chmod(0o600)
             except FileExistsError:
@@ -65,10 +77,11 @@ def main(argv: list[str] | None = None) -> int:
             ui.write(ui.paint("  Выполнить? [Y/n] (Enter = n): ", "1;96"))
             return 0
         settings = Settings.load()
-        command_file_mode = bool(getattr(args, "command_file", None))
-        ui = UI(settings.color, sys.stdout if command_file_mode else None, terminal=command_file_mode and sys.stdin.isatty())
+        emit_mode = bool(getattr(args, "emit_command", False))
+        ui = UI(settings.color, None if emit_mode else sys.stdout, terminal=not emit_mode and sys.stdin.isatty())
         if args.action == "doctor":
             ui.banner()
+            ui.note(f"Провайдер: {settings.provider}")
             ui.panel("НАСТРОЙКИ", f"Конфиг: {config_path()}\nAPI: {settings.base_url}\nМодель: {settings.model}\nКлюч: {'задан' if settings.api_key and settings.api_key != 'your-api-key' else 'не задан'}\nPython: {sys.version.split()[0]}\nShell: {shell_name()}\nКоманды: {', '.join(context(shell_name())['available_commands'])}")
             settings.validate_key()
             ui.note("Локальные настройки корректны. Соединение с API не проверялось.")

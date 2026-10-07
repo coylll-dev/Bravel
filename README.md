@@ -35,10 +35,50 @@ Bravel работает внутри привычной оболочки. `cd`, 
 | Подтверждение | `Y` разрешает план; Enter и `n` отменяют; повышенный риск требует `RUN` |
 | Запуск CS2 | Поиск установленной игры в библиотеках Steam и запуск после подтверждения |
 | Просмотр | `--dry-run` показывает план без выполнения |
-| Любой совместимый API | Адрес, ключ и модель задаются в `.env` |
+| Gemini и роутеры | Прямой Gemini API, OpenAI, OpenRouter и другие совместимые сервисы |
+| Установка и удаление | Python-установщик; `bravel update` и `bravel uninstall` |
 | Красивый терминал | Цветные панели; `NO_COLOR` и монохромный режим поддерживаются |
 
-## Быстрый старт · Windows / PowerShell
+## Простая установка
+
+Нужен Python 3.10+. Скачайте [`install.py`](https://raw.githubusercontent.com/coylll-dev/Bravel/main/install.py) и выполните:
+
+```powershell
+# Windows
+python install.py
+```
+
+```bash
+# Linux
+python3 install.py
+```
+
+Git, ручной venv и запуск `.ps1` не нужны. Установщик скачивает пакет, создаёт отдельное окружение без прав администратора, подключает Bravel к профилю оболочки и открывает мастер настройки. Выберите провайдера, модель и введите ключ; ввод ключа скрыт. После установки откройте новый терминал.
+
+Можно сразу выбрать Gemini: `python install.py --provider gemini`, или OpenRouter: `--provider openrouter`. Без мастера: `--no-configure`; позже запустите `bravel configure`. На Linux без поддержки venv установите пакет `python3-venv` средствами своего дистрибутива.
+
+| Действие | Команда |
+| --- | --- |
+| Изменить API, модель или ключ | `bravel configure` |
+| Переключиться на Gemini | `bravel configure --provider gemini` |
+| Обновить программу | `bravel update` |
+| Удалить программу и подключение | `bravel uninstall` |
+| Удалить также стандартный `.env` с ключом | `bravel uninstall --purge` |
+
+Обновление и удаление завершаются отдельным Python-процессом, чтобы Windows освободила запущенный `bravel.exe`. Дождитесь сообщения о завершении и откройте новый терминал. Удаление сохраняет конфиг API по умолчанию и резервную копию исходного профиля `.bravel.bak`. Пользовательский профиль и чужие окружения не удаляются.
+
+Если команда недоступна, скачанный установщик тоже умеет управление:
+
+```text
+python install.py update
+python install.py uninstall
+```
+
+На Linux используйте `python3`. Каталог установки: `%LOCALAPPDATA%/Bravel` на Windows, `$XDG_DATA_HOME/bravel` или `~/.local/share/bravel` на Linux. Можно выбрать `--prefix`, `--shell`, `--profile`, либо установить только CLI с `--no-profile` и запускать его из `venv/Scripts` или `venv/bin` в каталоге установки.
+
+Windows подключает найденные PowerShell 7 и Windows PowerShell; Linux — Bash. Zsh/fish и автоматические хуки CMD пока не поддерживаются. Внутренние `.ps1` и `.bash` остаются адаптерами для перехвата `#` и неизвестных команд; пользователю подключать их вручную не нужно. Установщик не меняет политики выполнения PowerShell: если система запрещает профили, используйте CLI по полному пути установки, а для автоматического подключения потребуется разрешённый профиль.
+
+## Ручная установка для разработки · Windows
 
 Нужны Python 3.10+, Git и PowerShell с PSReadLine. Рекомендуется PowerShell 7.
 
@@ -78,7 +118,7 @@ $env:PATH = "$PWD\.venv\Scripts;$env:PATH"
 
 Подключение действует только в текущей сессии. Для автоподключения добавьте в `$PROFILE` путь к установленному скрипту `bravel.ps1`; команда `bravel` должна быть доступна в PATH. `bravel integration powershell` выводит нужный путь. Профиль Bravel сам не меняет.
 
-## Быстрый старт · Linux / Bash
+## Ручная установка для разработки · Linux
 
 ```bash
 git clone https://github.com/coylll-dev/Bravel.git
@@ -113,6 +153,7 @@ fi
 По умолчанию: `~/.config/bravel/.env` на обеих ОС. Шаблон — [`.env.example`](.env.example).
 
 ```dotenv
+AI_PROVIDER=openai
 AI_API_BASE_URL=https://api.openai.com/v1
 AI_API_KEY=your-api-key
 AI_MODEL=gpt-4o-mini
@@ -125,6 +166,7 @@ AI_COLOR=auto
 
 | Параметр | Значение |
 | --- | --- |
+| `AI_PROVIDER` | `openai`, `gemini`, `openrouter`, `compatible` |
 | `AI_API_BASE_URL` | Базовый URL совместимого API, обычно заканчивается `/v1` |
 | `AI_API_KEY` | Ключ провайдера; не попадёт в Git |
 | `AI_MODEL` | Точное имя модели у вашего провайдера |
@@ -149,7 +191,32 @@ export BRAVEL_ENV="$PWD/.env"
 
 Bravel не загружает конфиги из случайной рабочей папки и не исполняет содержимое `.env`. Для локального сервера можно использовать HTTP только на `localhost`, `127.0.0.1` или `::1`; удалённые endpoints требуют HTTPS.
 
-API использует [Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create). Пример модели в конфиге можно заменить любой совместимой моделью вашего сервиса.
+OpenAI и совместимые роутеры используют [Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create). Прямой Gemini использует [Google generateContent](https://ai.google.dev/api/generate-content), с ключом в заголовке `x-goog-api-key`. [OpenRouter](https://openrouter.ai/docs/quickstart) поддерживает совместимый формат. Ключи не добавляются в URL; перенаправления запросов отключены.
+
+Минимальные конфиги (URL подставляется по провайдеру):
+
+```dotenv
+AI_PROVIDER=gemini
+GEMINI_API_KEY=your-key
+AI_MODEL=gemini-3.8-flash
+```
+
+```dotenv
+AI_PROVIDER=openrouter
+OPENROUTER_API_KEY=your-key
+AI_MODEL=openrouter/auto
+```
+
+`openrouter/auto` — [автоматический роутер OpenRouter](https://openrouter.ai/docs/guides/routing/routers/auto-router). Можно выбрать точный идентификатор доступной вам модели. Для другого роутера:
+
+```dotenv
+AI_PROVIDER=compatible
+AI_API_BASE_URL=https://your-router.example/v1
+AI_API_KEY=your-key
+AI_MODEL=provider/model-id
+```
+
+Общий `AI_API_KEY` работает для всех провайдеров и имеет приоритет над `GEMINI_API_KEY`, `OPENROUTER_API_KEY` или `OPENAI_API_KEY`. Шаблон конкретного сервиса: `bravel init --provider gemini`. При смене провайдера обновите URL и модель либо удалите эти строки для значений по умолчанию. Проще использовать `bravel configure`.
 
 ## Команды CLI
 
@@ -160,6 +227,9 @@ bravel fix "gti status"                      Исправить неизвест
 bravel ask --shell bash "покажи IP"           Явно выбрать оболочку
 bravel doctor                               Проверить настройки без вызова API
 bravel init                                 Создать .env, не перезаписывая существующий
+bravel configure                            Мастер настройки API и скрытого ввода ключа
+bravel update                               Обновить управляемую установку
+bravel uninstall                            Удалить управляемую установку
 bravel integration powershell               Путь к подключению PowerShell
 bravel integration bash                     Путь к подключению Bash
 bravel demo                                 Демо интерфейса без API и запуска команд
@@ -190,7 +260,7 @@ python -m pip install -e .
 python -m unittest discover -s tests -v
 ```
 
-Тесты API используют локальный HTTP-сервер, настоящий API-ключ не нужен. GitHub Actions запускает проверки на Windows и Linux с Python 3.10, 3.12 и 3.13, включая подключение оболочек.
+Тесты API используют локальный HTTP-сервер, настоящий API-ключ не нужен. GitHub Actions проверяет Windows и Linux с Python 3.10, 3.12 и 3.13, включая подключение оболочек и полный цикл установки/удаления в отдельной временной папке.
 
 ```bash
 git pull --ff-only
@@ -202,7 +272,7 @@ python -m pip install -e .
 Для отправки изменений:
 
 ```bash
-git add bravel tests docs README.md pyproject.toml .env.example .gitignore .github
+git add bravel tests docs install.py README.md pyproject.toml .env.example .gitignore .github
 git commit -m "Describe the change"
 git push origin main
 ```

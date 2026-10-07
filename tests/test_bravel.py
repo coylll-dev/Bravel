@@ -135,6 +135,7 @@ class ExecutionTests(unittest.TestCase):
 class APITests(unittest.TestCase):
     def setUp(self):
         self.requests = []
+        self.api_headers = []
         self.status = 200
         self.body = {"choices": [{"message": {"content": json.dumps({"summary": "Test", "steps": [{"command": "pwd", "explanation": "Directory", "risk": "low"}]})}}]}
         outer = self
@@ -143,6 +144,7 @@ class APITests(unittest.TestCase):
             def do_POST(self):
                 payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 outer.requests.append((self.path, self.headers.get("Authorization"), payload))
+                outer.api_headers.append(dict(self.headers))
                 self.send_response(outer.status)
                 if outer.status == 302:
                     self.send_header("Location", "http://localhost:1/stolen")
@@ -190,6 +192,33 @@ class APITests(unittest.TestCase):
         _, authorization, payload = self.requests[0]
         self.assertIsNone(authorization)
         self.assertNotIn("response_format", payload)
+
+    def test_native_gemini_uses_header_key_and_generate_content_format(self):
+        content = self.body["choices"][0]["message"]["content"]
+        self.body = {"candidates": [{"content": {"parts": [{"text": "hidden thinking", "thought": True}, {"text": content}]}}]}
+        settings = Settings(provider="gemini", base_url=self.settings.base_url, api_key="gemini-test-key", model="models/gemini-3.8-flash")
+        plan = Planner(settings).make_plan("show directory", {"shell": "bash"})
+        self.assertEqual(plan.steps[0].command, "pwd")
+        path, authorization, payload = self.requests[0]
+        self.assertEqual(path, "/v1/models/gemini-3.8-flash:generateContent")
+        self.assertIsNone(authorization)
+        self.assertEqual(self.api_headers[0]["X-Goog-Api-Key"], "gemini-test-key")
+        self.assertEqual(payload["generationConfig"], {"responseMimeType": "application/json"})
+        self.assertIn("systemInstruction", payload)
+        self.assertNotIn("gemini-test-key", path + json.dumps(payload))
+
+    def test_gemini_blocked_response_cannot_produce_commands(self):
+        self.body = {"promptFeedback": {"blockReason": "SAFETY"}}
+        with self.assertRaises(ConsoleError):
+            Planner(Settings(provider="gemini", base_url=self.settings.base_url, api_key="test", model="gemini-3.8-flash")).make_plan("x", {})
+
+    def test_openrouter_uses_compatible_protocol_and_router_model_id(self):
+        settings = Settings(provider="openrouter", base_url=self.settings.base_url, api_key="router-test-key", model="openrouter/auto")
+        Planner(settings).make_plan("x", {})
+        path, authorization, payload = self.requests[0]
+        self.assertEqual(path, "/v1/chat/completions")
+        self.assertEqual(authorization, "Bearer router-test-key")
+        self.assertEqual(payload["model"], "openrouter/auto")
 
 
 class GameTests(unittest.TestCase):

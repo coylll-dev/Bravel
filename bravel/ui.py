@@ -10,6 +10,7 @@ from typing import TextIO
 
 def safe_text(value: str) -> str:
     # No terminal escape sequences, bidi controls, or carriage-return rewriting.
+    value = value.replace("\r\n", "\n")
     return "".join(c if c == "\n" or not unicodedata.category(c).startswith("C") else "?" for c in value)
 
 

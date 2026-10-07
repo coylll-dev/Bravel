@@ -23,7 +23,7 @@ def main():
         scripts = root / "venv" / ("Scripts" if os.name == "nt" else "bin")
         executable = scripts / ("bravel.exe" if os.name == "nt" else "bravel")
         result = subprocess.run([str(executable), "--version"], check=True, capture_output=True, encoding="utf-8")
-        assert result.stdout.strip() == "0.4.1"
+        assert result.stdout.strip() == "0.4.2"
         installed_python = root / "venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
         subprocess.run([str(installed_python), "-I", "-c", "import importlib.util; assert importlib.util.find_spec('bravel.chat'); assert importlib.util.find_spec('bravel.desktop') is None; assert importlib.util.find_spec('bravel.bridge') is None"], check=True)
         assert (root / "installer.py").is_file()

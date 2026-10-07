@@ -3,6 +3,8 @@ from __future__ import annotations
 import io
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,11 +14,50 @@ from unittest.mock import patch
 from bravel.agent import Agent
 from bravel.config import ConsoleError, Settings
 from bravel.planner import Plan, Step
-from bravel.ui import UI
+from bravel.ui import UI, safe_text
 from bravel.apps import game_plan, SteamGame
 
 
 class AgentTests(unittest.TestCase):
+    def test_crlf_output_does_not_gain_question_marks(self):
+        self.assertEqual(safe_text("192.0.2.1\r\nsecond\r\n"), "192.0.2.1\nsecond\n")
+        self.assertEqual(safe_text("rewrite\rhidden\x1b"), "rewrite?hidden?")
+
+    def test_launched_child_holding_output_does_not_crash_agent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            script = root / "launch.py"
+            pid_file = root / "child.pid"
+            script.write_text("import subprocess, sys\nfrom pathlib import Path\n"
+                              "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
+                              "Path('child.pid').write_text(str(child.pid))\n"
+                              "print('launched', flush=True)\n", encoding="utf-8")
+            agent = Agent(cwd=root, settings=Settings(require_key=False))
+            command = (f"& '{sys.executable.replace(chr(39), chr(39)*2)}' '{script}'" if os.name == "nt"
+                       else f"'{sys.executable}' '{script}'")
+            try:
+                result = agent._run(command)
+                self.assertEqual(result["exit_code"], 0)
+                self.assertIn("launched", result["output"])
+                self.assertNotIn("?", result["output"])
+                result = agent._run("Write-Output 'still alive'" if os.name == "nt" else "echo 'still alive'")
+                self.assertIn("still alive", result["output"])
+            finally:
+                if pid_file.exists():
+                    pid = int(pid_file.read_text())
+                    if os.name == "nt":
+                        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    else:
+                        import signal
+                        try:
+                            os.kill(pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                for temporary in agent._command_directories:
+                    temporary.cleanup()
+                self.assertTrue(all(not Path(temporary.name).exists() for temporary in agent._command_directories))
+
     def plan(self, agent, command="echo bravel-test", risk="low"):
         with patch("bravel.agent.game_plan", return_value=None), patch("bravel.agent.Planner.make_plan", return_value=Plan("test", (Step(command, "test", risk),))):
             return agent.make_plan("test")

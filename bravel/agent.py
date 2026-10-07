@@ -30,6 +30,7 @@ class Agent:
         self.rounds = 0
         self._cancel = Event()
         self._lock = Lock()
+        self._command_directories: list[tempfile.TemporaryDirectory] = []
 
     def cancel(self) -> None:
         with self._lock:
@@ -102,7 +103,15 @@ class Agent:
     def _run(self, command: str) -> dict:
         # Files avoid pipe deadlocks and bound RAM even if a command floods stdout.
         # Keep only a small tail for the model; every command remains explicitly approved.
-        with tempfile.TemporaryDirectory(prefix="bravel-command-") as directory:
+        # Launched apps can inherit stdout and keep it open after the shell exits.
+        # Do not kill the requested app or fail the task over a Windows file lock.
+        # Retry cleanup on later commands, once the app releases the handle.
+        for temporary in self._command_directories:
+            temporary.cleanup()
+        self._command_directories = [temporary for temporary in self._command_directories if Path(temporary.name).exists()]
+        temporary = tempfile.TemporaryDirectory(prefix="bravel-command-", ignore_cleanup_errors=True)
+        self._command_directories.append(temporary)
+        with temporary as directory:
             cwd_file = Path(directory) / "cwd.txt"
             if self.shell == "powershell":
                 destination = str(cwd_file).replace("'", "''")

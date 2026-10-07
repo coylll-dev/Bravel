@@ -10,7 +10,6 @@ from threading import Thread
 from unittest.mock import patch
 
 from bravel.agent import Agent
-from bravel.bridge import save_settings, status
 from bravel.config import ConsoleError, Settings
 from bravel.planner import Plan, Step
 from bravel.ui import UI
@@ -52,18 +51,6 @@ class AgentTests(unittest.TestCase):
         self.plan(agent)
         with self.assertRaises(ConsoleError):
             agent.execute(previous["plan_id"], approval="approve")
-
-    def test_cancel_before_worker_starts_never_plans_or_executes(self):
-        agent = Agent(settings=Settings(require_key=False))
-        plan = self.plan(agent)
-        agent.begin_request()
-        agent.cancel()
-        with patch("bravel.agent.Planner.make_plan") as planner, self.assertRaises(ConsoleError):
-            agent.make_plan("test", prepared=True)
-        planner.assert_not_called()
-        with patch.object(agent, "_run") as run, self.assertRaises(ConsoleError):
-            agent.execute(plan["plan_id"], approval="approve", prepared=True)
-        run.assert_not_called()
 
     def test_command_output_reaches_next_plan_and_reset_clears_it(self):
         agent = Agent(settings=Settings(require_key=False))
@@ -128,12 +115,4 @@ class AgentTests(unittest.TestCase):
             plan = game_plan("Запусти Deep Rock Galactic игру в стим", "cmd")
             finder.assert_called_once_with("548430")
             self.assertEqual(plan.steps[0].command, "start steam://rungameid/548430")
-
-    def test_desktop_settings_never_return_secret_and_keep_key(self):
-        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"BRAVEL_ENV": str(Path(directory) / ".env")}, clear=True):
-            save_settings({"provider": "gemini", "base_url": "https://generativelanguage.googleapis.com/v1beta", "model": "example", "api_key": "test-secret"})
-            self.assertNotIn("test-secret", json.dumps(status(Agent(cwd=Path(directory)))))
-            save_settings({"provider": "gemini", "base_url": "https://generativelanguage.googleapis.com/v1beta", "model": "changed", "api_key": ""})
-            self.assertEqual(Settings.load().api_key, "test-secret")
-            self.assertEqual(Settings.load().model, "changed")
 

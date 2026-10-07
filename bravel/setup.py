@@ -63,7 +63,8 @@ def configure(provider: str | None, path: Path | None, ui: UI) -> int:
 
 def managed_action(action: str, *, purge: bool, ui: UI) -> int:
     root = Path(sys.prefix).parent
-    installer = root / "installer.py"
+    bundled_installer = Path(sys.prefix) / "share/bravel/install.py"
+    installer = bundled_installer if bundled_installer.is_file() else root / "installer.py"
     if not installer.is_file() or not (root / "bravel-install.json").is_file():
         raise ConsoleError("Эта копия установлена через pip/pipx. Удаление: pipx uninstall bravel или python -m pip uninstall bravel. Для управления одной командой используйте install.py.")
     base_python = getattr(sys, "_base_executable", sys.executable)

@@ -66,6 +66,24 @@ def find_steam_game(app_id: str, roots: list[Path] | None = None) -> SteamGame |
     return None
 
 
+def installed_steam_games(roots: list[Path] | None = None) -> list[SteamGame]:
+    games = {}
+    for root in roots if roots is not None else steam_roots():
+        libraries = [root]
+        try:
+            libraries += [Path(value.replace("\\\\", "\\")) for value in re.findall(r'"path"\s*"([^"\n]+)"', (root / "steamapps/libraryfolders.vdf").read_text(encoding="utf-8", errors="replace"))]
+        except OSError:
+            pass
+        for library in libraries:
+            for manifest in list((library / "steamapps").glob("appmanifest_*.acf"))[:500]:
+                identifier = re.fullmatch(r"appmanifest_(\d+)\.acf", manifest.name)
+                if identifier and identifier[1] not in games:
+                    game = find_steam_game(identifier[1], [root])
+                    if game:
+                        games[game.app_id] = game
+    return sorted(games.values(), key=lambda game: game.name.casefold())
+
+
 def game_plan(prompt: str, shell: str) -> Plan | None:
     if not re.search(r"\b(открой|запусти|open|launch|start)\b", prompt, re.I):
         return None
@@ -73,28 +91,10 @@ def game_plan(prompt: str, shell: str) -> Plan | None:
     app_id = "730" if known else ("548430" if re.search(r"deep\s+rock\s+galactic|дип\s+рок|\bdrg\b", prompt, re.I) else None)
     game = find_steam_game(app_id) if app_id else None
     if app_id is None:
-        # Match actual manifest names, rather than guessing an app ID from the model.
-        for root in steam_roots():
-            libraries = [root]
-            try:
-                libraries += [Path(value.replace("\\\\", "\\")) for value in re.findall(r'"path"\s*"([^"\n]+)"', (root / "steamapps/libraryfolders.vdf").read_text(encoding="utf-8", errors="replace"))]
-            except OSError:
-                pass
-            for library in libraries:
-                for manifest in list((library / "steamapps").glob("appmanifest_*.acf"))[:500]:
-                    try:
-                        name = re.search(r'"name"\s*"([^"\n]+)"', manifest.read_text(encoding="utf-8", errors="replace"))
-                        identifier = re.fullmatch(r"appmanifest_(\d+)\.acf", manifest.name)
-                        if name and identifier and name[1].casefold() in prompt.casefold():
-                            game = find_steam_game(identifier[1], [root])
-                            if game:
-                                break
-                    except OSError:
-                        continue
-                if game:
-                    break
-            if game:
-                break
+        matches = [game for game in installed_steam_games() if game.name.casefold() in prompt.casefold()]
+        if len(matches) > 1:
+            return Plan("Найдено несколько игр: " + ", ".join(game.name for game in matches) + ". Уточните, какую запустить.", ())
+        game = matches[0] if matches else None
         if not game:
             return None
     if not game:

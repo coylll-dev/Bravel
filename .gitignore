@@ -12,5 +12,3 @@ build/
 .coverage
 htmlcov/
 .tools/
-**/bin/
-**/obj/

@@ -11,11 +11,6 @@ import subprocess
 import sys
 import time
 import venv
-import tempfile
-import platform
-import zipfile
-import re
-from urllib.request import Request, urlopen
 from pathlib import Path
 
 SOURCE_URL = "https://github.com/coylll-dev/Bravel/archive/refs/heads/main.zip"
@@ -139,36 +134,6 @@ def usage_instructions(root: Path, profiles: list[tuple[str, Path]]) -> None:
         print(f'  Короткая команда на текущую сессию CMD: doskey bravel="{executable}" $*')
 
 
-def desktop_shortcut(root: Path) -> list[dict]:
-    if os.name == "nt":
-        shell = shutil.which("powershell") or shutil.which("pwsh")
-        if not shell:
-            return []
-        # Command strings work without profiles or changes to execution policy.
-        quote = lambda value: str(value).replace("'", "''")
-        command = ("$folder=[Environment]::GetFolderPath('Programs'); "
-                   "$path=Join-Path $folder 'Bravel.lnk'; "
-                   "$link=(New-Object -ComObject WScript.Shell).CreateShortcut($path); "
-                   f"$target='{quote(root / 'desktop/Bravel.Desktop.exe')}'; "
-                   "if ((Test-Path -LiteralPath $path) -and $link.TargetPath -ne $target) { exit 0 }; "
-                   "$link.TargetPath=$target; "
-                   f"$link.WorkingDirectory='{quote(Path.home())}'; "
-                   "$link.Description='Bravel · агент на компьютере'; $link.Save(); "
-                   "[Console]::OutputEncoding=[Text.Encoding]::UTF8; Write-Output $path")
-        result = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-Command", command], capture_output=True, encoding="utf-8")
-        if result.returncode == 0 and result.stdout.strip():
-            return [{"path": result.stdout.strip(), "kind": "lnk"}]
-        return []
-    path = Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local/share"))) / "applications/bravel.desktop"
-    signature = f"# Bravel-managed: {root.resolve()}\n"
-    if path.exists() and not path.read_text(encoding="utf-8").startswith(signature):
-        return []
-    executable = str(root / "desktop/Bravel.Desktop").replace("\\", "\\\\").replace('"', '\\"').replace("`", "\\`").replace("$", "\\$")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(signature + f'[Desktop Entry]\nType=Application\nName=Bravel\nComment=AI desktop agent\nExec="{executable}"\nTerminal=false\nCategories=Utility;\n', encoding="utf-8")
-    return [{"path": str(path), "kind": "desktop"}]
-
-
 def remove_desktop_shortcuts(root: Path, manifest: dict) -> None:
     for item in manifest.get("shortcuts", []):
         path = Path(item["path"])
@@ -186,52 +151,25 @@ def remove_desktop_shortcuts(root: Path, manifest: dict) -> None:
                 subprocess.run([shell, "-NoProfile", "-NonInteractive", "-Command", command], check=True)
 
 
-def install_desktop(root: Path, python: Path, source: Path | None = None) -> None:
-    filename = "Bravel.Desktop.exe" if os.name == "nt" else "Bravel.Desktop"
-    destination = root / "desktop"
-    if source is not None:
-        source = source.resolve()
-        if not (source / filename).is_file():
-            raise RuntimeError(f"Сборка интерфейса не найдена: {source}")
-        if source != destination.resolve():
-            shutil.copytree(source, destination, dirs_exist_ok=True)
-    else:
-        if platform.machine().lower() not in {"amd64", "x86_64"}:
-            raise RuntimeError("Готовый интерфейс выпускается для x64; для другой архитектуры соберите C# проект")
-        version = subprocess.run([str(python), "-m", "bravel", "--version"], capture_output=True, text=True, check=True).stdout.strip()
-        if not re.fullmatch(r"\d+\.\d+\.\d+", version):
-            raise RuntimeError("Не удалось определить версию Bravel")
-        target = "win-x64" if os.name == "nt" else "linux-x64"
-        url = f"https://github.com/coylll-dev/Bravel/releases/download/v{version}/bravel-desktop-{target}.zip"
-        with tempfile.TemporaryDirectory(prefix="bravel-desktop-", dir=root) as directory:
-            archive_path = Path(directory) / "desktop.zip"
-            request = Request(url, headers={"User-Agent": "Bravel-installer"})
-            with urlopen(request, timeout=60) as response, archive_path.open("wb") as file:
-                total = 0
-                while chunk := response.read(1024 * 1024):
-                    total += len(chunk)
-                    if total > 300_000_000:
-                        raise RuntimeError("Архив интерфейса слишком большой")
-                    file.write(chunk)
-            staging = Path(directory) / "files"
-            staging.mkdir()
-            with zipfile.ZipFile(archive_path) as archive:
-                if sum(item.file_size for item in archive.infolist()) > 600_000_000:
-                    raise RuntimeError("Распакованный интерфейс слишком большой")
-                for item in archive.infolist():
-                    candidate = (staging / item.filename).resolve()
-                    if staging.resolve() not in candidate.parents or (item.external_attr >> 16) & 0o170000 == 0o120000:
-                        raise RuntimeError("Небезопасный путь в архиве интерфейса")
-                archive.extractall(staging)
-            if not (staging / filename).is_file():
-                raise RuntimeError("Неверный архив интерфейса")
-            shutil.copytree(staging, destination, dirs_exist_ok=True)
-    if os.name != "nt":
-        (destination / filename).chmod(0o755)
-    print("  ✓ Интерфейс установлен. Запуск: bravel desktop")
+def remove_legacy_desktop(root: Path, previous: dict | None) -> None:
+    """Migrate old GUI installs to CLI without touching the engine or config."""
+    desktop = root / "desktop"
+    if desktop.exists():
+        if not previous or not (previous.get("desktop") or (desktop / "Bravel.Desktop.exe").is_file() or (desktop / "Bravel.Desktop").is_file()):
+            return
+        if desktop.is_symlink() or root.resolve() not in desktop.resolve().parents:
+            raise RuntimeError("Небезопасный путь старого интерфейса; удаление отменено")
+        remove_desktop_shortcuts(root, previous or {})
+        try:
+            shutil.rmtree(desktop)
+        except PermissionError as exc:
+            raise RuntimeError("Закройте старое окно Bravel и повторите обновление") from exc
+        print("  ✓ Старый интерфейс удалён; остаётся CLI.")
+    elif previous:
+        remove_desktop_shortcuts(root, previous)
 
 
-def install(root: Path, *, source: str | None = None, profiles: list[tuple[str, Path]] | None = None, provider: str | None = None, configure: bool = True, desktop: bool = False, desktop_source: Path | None = None) -> None:
+def install(root: Path, *, source: str | None = None, profiles: list[tuple[str, Path]] | None = None, provider: str | None = None, configure: bool = True) -> None:
     root = root.expanduser().absolute()
     marker = root / "bravel-install.json"
     previous = load_manifest(root) if marker.exists() else None
@@ -245,7 +183,7 @@ def install(root: Path, *, source: str | None = None, profiles: list[tuple[str, 
     for _, path in selected:
         remove_block(profile_text(path))
     root.mkdir(parents=True, exist_ok=True)
-    marker.write_text(json.dumps({"app": "bravel", "root": str(root.resolve()), "profiles": [{"shell": shell, "path": str(path.absolute())} for shell, path in selected], "source": source or SOURCE_URL, "shortcuts": previous.get("shortcuts", []) if previous else []}, indent=2), encoding="utf-8")
+    marker.write_text(json.dumps({"app": "bravel", "root": str(root.resolve()), "profiles": [{"shell": shell, "path": str(path.absolute())} for shell, path in selected], "source": source or SOURCE_URL}, indent=2), encoding="utf-8")
     environment = root / "venv"
     if not environment.exists():
         venv.EnvBuilder(with_pip=True).create(environment)
@@ -272,12 +210,7 @@ def install(root: Path, *, source: str | None = None, profiles: list[tuple[str, 
     print(f"  ◆ Bravel установлен: {root}")
     if configure:
         subprocess.run(configure_command(python, provider), check=True)
-    if desktop or desktop_source is not None or (previous and previous.get("desktop")):
-        install_desktop(root, python, desktop_source)
-        data = json.loads(marker.read_text(encoding="utf-8"))
-        data["desktop"] = True
-        data["shortcuts"] = desktop_shortcut(root)
-        marker.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    remove_legacy_desktop(root, previous)
     usage_instructions(root, selected)
 
 
@@ -348,8 +281,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--provider", choices=("openai", "gemini", "openrouter", "compatible"), help="Пропустить выбор провайдера в мастере")
     parser.add_argument("--no-configure", action="store_true")
     parser.add_argument("--no-profile", action="store_true")
-    parser.add_argument("--desktop", action="store_true", help="Также установить интерфейс C# из GitHub Release")
-    parser.add_argument("--desktop-source", type=Path, help="Папка локальной готовой сборки интерфейса")
     parser.add_argument("--purge", action="store_true")
     parser.add_argument("--wait-pid", type=int, help=argparse.SUPPRESS)
     parser.add_argument("--self-remove", action="store_true", help=argparse.SUPPRESS)
@@ -368,7 +299,7 @@ def main(argv: list[str] | None = None) -> int:
                 source = args.source
                 shell = ("powershell" if os.name == "nt" else "bash") if args.shell == "auto" else args.shell
                 selected = [] if args.no_profile else ([(shell, args.profile)] if args.profile else detect_profiles(shell))
-            install(args.prefix, source=source, profiles=selected, provider=args.provider, configure=not args.no_configure and args.action == "install", desktop=args.desktop, desktop_source=args.desktop_source)
+            install(args.prefix, source=source, profiles=selected, provider=args.provider, configure=not args.no_configure and args.action == "install")
         if args.self_remove:
             Path(__file__).unlink(missing_ok=True)
         return 0

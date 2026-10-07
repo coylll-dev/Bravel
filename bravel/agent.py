@@ -1,4 +1,4 @@
-"""Stateful agent shared by the desktop and terminal. No background approvals."""
+"""Stateful CLI agent. Every action requires a preview and approval."""
 from __future__ import annotations
 
 import os
@@ -21,7 +21,7 @@ from .ui import safe_text
 
 class Agent:
     def __init__(self, *, cwd: Path | None = None, shell: str | None = None, settings: Settings | None = None):
-        self.cwd = (cwd or Path.home()).resolve()
+        self.cwd = (cwd or Path.cwd()).resolve()
         self.shell = shell_name(shell)
         self.settings = settings
         self.history: list[dict] = []
@@ -36,23 +36,16 @@ class Agent:
             self._cancel.set()
             self.pending = None
 
-    def begin_request(self) -> None:
-        with self._lock:
-            self._cancel.clear()
-
     def reset(self) -> None:
         self.pending = None
         self.history.clear()
         self.last_result = None
         self.rounds = 0
 
-    def make_plan(self, prompt: str, *, continuation: bool = False, prepared: bool = False) -> dict:
+    def make_plan(self, prompt: str, *, continuation: bool = False) -> dict:
         with self._lock:
             self.pending = None
-            if not prepared:
-                self._cancel.clear()
-            if self._cancel.is_set():
-                raise ConsoleError("Запрос отменён")
+            self._cancel.clear()
         if continuation:
             if self.last_result is None:
                 raise ConsoleError("Сначала выполните предложенный план.")
@@ -84,10 +77,8 @@ class Agent:
                 "steps": [{**asdict(step), "dangerous": dangerous(step)} for step in plan.steps],
                 "dangerous": any(dangerous(step) for step in plan.steps), "cwd": str(self.cwd)}
 
-    def execute(self, identifier: str, *, approval: str, prepared: bool = False) -> dict:
+    def execute(self, identifier: str, *, approval: str) -> dict:
         with self._lock:
-            if prepared and self._cancel.is_set():
-                raise ConsoleError("Запрос отменён")
             if self.pending is None or identifier != self.pending[0]:
                 raise ConsoleError("План устарел или уже выполнен. Запросите новый.")
             plan = self.pending[1]
@@ -95,8 +86,7 @@ class Agent:
             if approval != required:
                 raise ConsoleError("Выполнение не подтверждено")
             self.pending = None  # A plan is a one-use capability, not supplied executable text.
-            if not prepared:
-                self._cancel.clear()
+            self._cancel.clear()
         results = []
         for step in plan.steps:
             if self._cancel.is_set():
@@ -135,20 +125,17 @@ class Agent:
                 except OSError as exc:
                     raise ConsoleError("Не удалось запустить команду") from exc
                 deadline = time.monotonic() + 120
-                while process.poll() is None:
-                    if self._cancel.wait(0.05) or time.monotonic() >= deadline or os.fstat(output.fileno()).st_size > 2_000_000:
-                        timed_out = not self._cancel.is_set()
-                        if os.name == "nt":
-                            subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], stdout=subprocess.DEVNULL,
-                                           stderr=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW)
-                        else:
-                            try:
-                                os.killpg(process.pid, signal.SIGKILL)
-                            except ProcessLookupError:
-                                pass
-                        process.kill() if process.poll() is None else None
-                        break
-                process.wait()
+                try:
+                    while process.poll() is None:
+                        if self._cancel.wait(0.05) or time.monotonic() >= deadline or os.fstat(output.fileno()).st_size > 2_000_000:
+                            timed_out = not self._cancel.is_set()
+                            self._stop_process(process)
+                            break
+                    process.wait()
+                except BaseException:
+                    self._cancel.set()
+                    self._stop_process(process)
+                    raise
                 output.seek(0, 2)
                 size = output.tell()
                 output.seek(max(0, size - 12000))
@@ -161,3 +148,20 @@ class Agent:
                     self.cwd = candidate.resolve()
             return {"command": command, "exit_code": process.returncode, "output": text,
                     "truncated": size > 12000, "timed_out": timed_out, "cancelled": self._cancel.is_set()}
+
+    @staticmethod
+    def _stop_process(process: subprocess.Popen) -> None:
+        if process.poll() is not None:
+            return
+        try:
+            if os.name == "nt":
+                subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW, timeout=5)
+            else:
+                os.killpg(process.pid, signal.SIGKILL)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=5)

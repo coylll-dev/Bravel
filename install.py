@@ -110,8 +110,9 @@ def configure_command(python: Path, provider: str | None) -> list[str]:
 
 def usage_instructions(root: Path, profiles: list[tuple[str, Path]]) -> None:
     shells = {shell for shell, _ in profiles}
+    print("  Диалог агента: bravel chat. Одна задача: bravel agent \"проверь сеть\".")
     if "powershell" in shells:
-        print("  Откройте PowerShell. Из CMD: powershell (или pwsh для PowerShell 7).")
+        print("  Автоподключение к оболочке: откройте новый PowerShell (из CMD: powershell).")
         print("  Автоматические # запросы и исправления работают в PowerShell; CMD поддерживает только прямой CLI.")
         if os.name == "nt":
             for name in ("powershell", "pwsh"):
@@ -120,8 +121,7 @@ def usage_instructions(root: Path, profiles: list[tuple[str, Path]]) -> None:
                     result = subprocess.run([executable, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "Get-ExecutionPolicy"], capture_output=True, text=True)
                     if result.returncode == 0 and result.stdout.strip() in {"Restricted", "AllSigned"}:
                         print(f"  ! {name}: политика {result.stdout.strip()} может блокировать профиль Bravel.")
-                        print("  Если вы разрешаете локальные скрипты, выполните в этой оболочке: Set-ExecutionPolicy -Scope CurrentUser RemoteSigned")
-                        print("  Затем откройте новую сессию PowerShell. Политика не изменялась установщиком.")
+                        print("  Для CLI и bravel chat менять политику не нужно; она не изменялась установщиком.")
     if "bash" in shells:
         print("  Откройте новую интерактивную сессию Bash.")
     if not shells:

@@ -61,7 +61,7 @@ class Agent:
         self.history.append({"role": "user", "text": prompt})
         settings = self.settings or Settings.load()
         ctx = context(self.shell)
-        ctx.update(cwd=str(self.cwd), history=self.history[-12:])
+        ctx.update(cwd=str(self.cwd), history=self.history[-12:], shell_variables_persist=False)
         plan = None if continuation else game_plan(prompt, self.shell)
         plan = plan or Planner(settings).make_plan(prompt, ctx)
         self.rounds += 1

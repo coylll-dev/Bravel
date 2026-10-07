@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bravel"
+version = "0.1.0"
+description = "An AI sidekick for your existing PowerShell and Bash terminal"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "coylll-dev"}]
+dependencies = []
+
+[project.scripts]
+bravel = "bravel.cli:main"
+bv = "bravel.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["bravel*"]
+
+[tool.setuptools.package-data]
+bravel = ["integrations/*.ps1", "integrations/*.bash"]

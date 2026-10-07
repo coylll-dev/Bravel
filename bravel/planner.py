@@ -103,6 +103,7 @@ class Planner:
             if not isinstance(content, str):
                 raise ValueError("empty response")
         except HTTPError as exc:
+            exc.close()
             descriptions = {401: "проверьте API-ключ", 403: "доступ запрещён", 404: "проверьте адрес API и модель", 429: "лимит запросов или средств", 400: "проверьте модель и AI_JSON_MODE"}
             raise ConsoleError(f"API HTTP {exc.code}: {descriptions.get(exc.code, 'сервер не обработал запрос')}") from exc
         except (URLError, TimeoutError, OSError) as exc:

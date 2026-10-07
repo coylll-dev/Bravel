@@ -223,14 +223,14 @@ class CLITests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, patch("sys.stdin", Terminal("n\n")), patch("sys.stdout", io.StringIO()), patch("sys.stderr", io.StringIO()), patch("bravel.cli.context", return_value={"shell": "powershell", "available_commands": ["cmd"]}):
             path = Path(directory) / "approved.ps1"
             self.assertEqual(main(["fix", "--shell", "powershell", "--command-file", str(path), "cdm"]), 0)
-            self.assertEqual(path.read_text(), "")
+            self.assertEqual(path.read_text(encoding="utf-8"), "")
 
     def test_powershell_command_file_contains_only_approved_script(self):
         with tempfile.TemporaryDirectory() as directory, patch("sys.stdin", Terminal("y\n")), patch("sys.stdout", io.StringIO()) as output, patch("sys.stderr", io.StringIO()), patch("bravel.cli.context", return_value={"shell": "powershell", "available_commands": ["cmd"]}):
             path = Path(directory) / "approved.ps1"
             self.assertEqual(main(["fix", "--shell", "powershell", "--command-file", str(path), "cdm"]), 0)
-            self.assertTrue(path.read_text().startswith("cmd\n"))
-            self.assertNotIn("BRAVEL", path.read_text())
+            self.assertTrue(path.read_text(encoding="utf-8").startswith("cmd\n"))
+            self.assertNotIn("BRAVEL", path.read_text(encoding="utf-8"))
             self.assertIn("BRAVEL", output.getvalue())
 
     def test_emit_mode_never_emits_when_declined(self):

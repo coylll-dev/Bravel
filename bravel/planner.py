@@ -27,6 +27,14 @@ changing facts when requested (IP, files, processes); do not reuse an old IP.
 Read verification results: observed means the stated condition was observed;
 not_observed/failed means do not claim success. It does not prove a new process.
 Use commands for the supplied OS and shell. Prefer one simple command at a time.
+The context lists Bravel's local inventory commands. Prefer these to guessed
+winget queries for installed games or apps. Never use WMIC product or
+Win32_Product: even inventory queries can trigger MSI consistency repairs.
+Command stdin is non-interactive. Avoid commands requiring input or source
+agreements; never silently add accept-agreement flags. Explain the limitation
+or propose a different method. Do not repeat an unchanged failed command.
+For follow-up questions retain the latest topic; do not switch to generic help
+when the user asks what alternatives exist for the preceding request.
 If context.shell_variables_persist is false, each step starts a fresh shell.
 Set and use required variables within the same single-line command.
 At most the supplied max_steps. Do not invent installed paths, programs or files.

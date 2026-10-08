@@ -18,5 +18,8 @@ def context(shell: str) -> dict:
         "shell": shell,
         "cwd": os.getcwd(),
         "available_commands": [name for name in known if shutil.which(name)],
+        "command_stdin_interactive": False,
+        "local_inventory_commands": {"games": "bravel games (Steam libraries)",
+                                     "apps": "bravel apps (PATH and standard locations)"},
         # No environment, file contents, shell history, or home-directory inventory.
     }

@@ -13,6 +13,7 @@ from threading import Event, Lock
 
 from .apps import game_plan
 from .programs import launch_plan
+from .inventory import inventory_plan
 from .policy import read_only
 from .privacy import redact_data
 from datetime import datetime, timezone
@@ -33,6 +34,7 @@ class Agent:
         self.last_result: dict | None = None
         self.rounds = 0
         self.mode = "ask"
+        self._failed_commands: set[str] = set()
         self._cancel = Event()
         self._lock = Lock()
         self._command_directories: list[tempfile.TemporaryDirectory] = []
@@ -47,6 +49,7 @@ class Agent:
         self.history.clear()
         self.last_result = None
         self.rounds = 0
+        self._failed_commands.clear()
 
     def make_plan(self, prompt: str, *, continuation: bool = False) -> dict:
         with self._lock:
@@ -64,6 +67,7 @@ class Agent:
                 raise ConsoleError("Запрос должен содержать от 1 до 16000 символов")
             self.rounds = 0
             self.last_result = None
+            self._failed_commands.clear()
         self.history.append({"role": "user", "text": prompt})
         settings = self.settings or Settings.load()
         self.settings = settings
@@ -71,8 +75,10 @@ class Agent:
         ctx = context(self.shell)
         ctx.update(cwd=str(self.cwd), history=self.history[-12:], shell_variables_persist=False,
                    current_time=datetime.now(timezone.utc).isoformat())
-        plan = None if continuation else game_plan(prompt, self.shell)
+        plan = None if continuation else inventory_plan(prompt) or game_plan(prompt, self.shell)
         plan = plan or (None if continuation else launch_plan(prompt, self.shell)) or Planner(settings).make_plan(prompt, ctx)
+        if continuation and any(step.command.strip().casefold() in self._failed_commands for step in plan.steps):
+            raise ConsoleError("Этот план повторяет уже неудачную команду без изменений. Уточните задачу; повтор автоматически не выполняется.")
         self.rounds += 1
         identifier = uuid.uuid4().hex
         with self._lock:
@@ -104,6 +110,11 @@ class Agent:
             if self._cancel.is_set():
                 break
             result = self._run(step.command)
+            if result["exit_code"] != 0:
+                self._failed_commands.add(step.command.strip().casefold())
+                output = result.get("output", "").casefold()
+                result["needs_interaction"] = any(text in output for text in (
+                    "error reading input in prompt", "0x8a150042", "cannot read from stdin", "requires an interactive terminal"))
             result["observed_at"] = datetime.now(timezone.utc).isoformat()
             if step.check and result["exit_code"] == 0 and not result["cancelled"] and not result["timed_out"]:
                 verification = self._run(step.check)

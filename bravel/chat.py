@@ -71,6 +71,9 @@ def run_task(agent: Agent, ui: UI, prompt: str, *, continuation: bool = False) -
                          "\n" + verification["command"] + "\n" + verification["output"])
         if output["cancelled"]:
             return 130
+        if any(item.get("needs_interaction") for item in output["results"]):
+            ui.note("Команда требует интерактивного ответа, а её stdin отключён. Цикл остановлен; соглашения автоматически не принимаются. /continue — запросить другой способ.")
+            return 1
         with ui.busy("Анализирую вывод…"):
             result = agent.make_plan("", continuation=True)
 

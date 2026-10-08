@@ -23,6 +23,10 @@ class PlanStructureError(ConsoleError):
     pass
 
 
+class PlanCheckError(ConsoleError):
+    pass
+
+
 SYSTEM_PROMPT = """You are Bravel, a careful terminal assistant. Reply in Russian.
 Produce ONLY a JSON object: {"summary": string, "steps": [{"command": string,
 "explanation": string, "risk": "low"|"medium"|"high", "check": optional string}],
@@ -86,6 +90,9 @@ use its error to correct the previous response. Nothing has executed. If it mixe
 tools and shell steps, choose ONLY the first necessary stage: either tools with
 empty steps, or steps with empty/omitted tools. Wait for actual results before
 planning the next stage. Stay within max_steps; never claim omitted actions ran.
+If the error concerns a result check, use an allowed simple read-only check for
+the selected shell, or omit check. Any other diagnostic belongs in steps with
+its own explanation and user approval, not in an automatically executed check.
 context.task_request is the original CURRENT task, even if recent history no
 longer includes it. context.task_progress preserves earlier outcomes, but excerpts
 can be incomplete. Do not repeat broad queries already performed; select a new,
@@ -105,6 +112,8 @@ Allowed checks: PowerShell Test-Path -LiteralPath 'path' or
 [bool](Get-Process -Name 'name' -ErrorAction SilentlyContinue);
 Bash test -e 'path' or pgrep -x -- 'name'. Otherwise omit check.
 A check must be a separate command, never include writes or shell operators.
+For observation-only steps, normally omit check: analyze exit code and actual
+output instead. Empty output is evidence of that query only, not task completion.
 Historical records and saved sessions are not current observations. Recheck
 changing facts when requested (IP, files, processes); do not reuse an old IP.
 Read verification results: observed means the stated condition was observed;
@@ -123,6 +132,14 @@ Commands already execute inside the selected shell. For PowerShell, write the
 script directly; do not nest powershell/pwsh -Command inside it (the outer shell
 would expand variables in double quotes). To pipe a foreach statement result,
 assign it to a variable first or use ForEach-Object in a pipeline.
+PowerShell's default object display can truncate values with ellipses before
+Bravel receives them. When full paths or identifiers matter, select only needed
+fields and explicitly serialize a bounded set as ConvertTo-Json -Compress with
+adequate -Depth, or Format-List followed by Out-String -Width 240. Group duplicate
+processes and narrow by actual candidates before querying large connection lists.
+Use targeted filters for the requested state; distinguish IPv4/IPv6 wildcards
+and listeners from established connections. Do not equate socket clients with
+the process managing a tunnel. Report output limits instead of asserting absence.
 At most the supplied max_steps. Do not invent installed paths, programs or files.
 For app discovery, provide a read-only search command. Agent history can contain
 previous command results; use them to propose the next step or explain the result.
@@ -163,7 +180,7 @@ class Plan:
     tools: tuple[ToolCall, ...] = ()
 
 
-def parse_plan(content: str, max_steps: int) -> Plan:
+def parse_plan(content: str, max_steps: int, *, shell: str | None = None) -> Plan:
     content = content.strip()
     if content.startswith("```") and content.endswith("```"):
         content = "\n".join(content.splitlines()[1:-1])
@@ -187,10 +204,11 @@ def parse_plan(content: str, max_steps: int) -> Plan:
         if not isinstance(explanation, str) or len(explanation) > 8000 or risk not in {"low", "medium", "high"}:
             raise ConsoleError("Неверное описание или риск шага")
         check = item.get("check", "")
-        if not isinstance(check, str) or len(check) > 2000 or (check and
-            (any(unicodedata.category(c).startswith("C") for c in check) or
-             not any(read_only(check, shell) for shell in ("powershell", "cmd", "bash")))):
+        if not isinstance(check, str) or len(check) > 2000 or any(unicodedata.category(c).startswith("C") for c in check):
             raise ConsoleError("Проверка результата должна быть простой командой только для чтения")
+        shells = (shell,) if shell is not None else ("powershell", "cmd", "bash")
+        if check and not any(read_only(check, candidate) for candidate in shells):
+            raise PlanCheckError("Проверка результата не входит в разрешённые простые команды чтения для выбранной оболочки. Исправьте или опустите check; другую диагностику предложите отдельным шагом с подтверждением. Ничего не выполнено.")
         steps.append(Step(command, explanation, risk, check))
     calls = data.get("tools", [])
     if not isinstance(calls, list):
@@ -267,8 +285,8 @@ class Planner:
         except (ValueError, KeyError, IndexError, TypeError) as exc:
             raise ConsoleError("Неожиданный формат ответа API") from exc
         try:
-            plan = parse_plan(content, self.settings.max_steps)
-        except (ToolError, PlanJSONError, PlanStructureError) as exc:
+            plan = parse_plan(content, self.settings.max_steps, shell=context.get("shell"))
+        except (ToolError, PlanJSONError, PlanStructureError, PlanCheckError) as exc:
             key = "tool_repair" if isinstance(exc, ToolError) else "response_repair"
             if not context.get("agent_tools") or context.get(key):
                 raise

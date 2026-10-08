@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 from bravel.agent import Agent
 from bravel.config import ConsoleError, Settings
-from bravel.planner import Planner, PlanStructureError
+from bravel.planner import Planner, PlanStructureError, PlanCheckError, parse_plan
 from bravel.syntax import syntax_errors
 
 
@@ -25,6 +25,41 @@ def plan_response(plan):
 
 
 class SyntaxTests(unittest.TestCase):
+    def test_disallowed_check_repaired_before_publication_and_never_executed(self):
+        step = {"command": "Get-Process", "explanation": "test", "risk": "low"}
+        for invalid_check in ("Get-Process | Where-Object Name -eq incy", "Remove-Item 'file.txt'", "pgrep -x -- 'incy'"):
+            with self.subTest(check=invalid_check):
+                opener = MagicMock()
+                opener.open.side_effect = [plan_response({"summary": "test", "steps": [{**step, "check": invalid_check}]}), plan_response({"summary": "test", "steps": [step]})]
+                agent = Agent(shell="powershell", settings=Settings(require_key=False))
+                with patch("bravel.planner.build_opener", return_value=opener), patch("bravel.syntax.syntax_errors", return_value=[]), patch.object(agent, "_run") as execute:
+                    published = agent.make_plan("Какой клиент работает?")
+                    self.assertEqual(published["steps"][0]["check"], "")
+                    with self.assertRaises(ConsoleError):
+                        agent.execute(published["plan_id"], approval="")
+                    execute.assert_not_called()
+                self.assertEqual(opener.open.call_count, 2)
+                request = json.loads(opener.open.call_args.args[0].data)
+                repair = json.loads(request["messages"][1]["content"])["context"]["response_repair"]
+                self.assertEqual(json.loads(repair["candidate"])["steps"][0]["check"], invalid_check)
+
+    def test_repeated_invalid_check_stops_after_one_repair(self):
+        plan = {"summary": "test", "steps": [{"command": "echo x", "explanation": "test", "risk": "low", "check": "Remove-Item 'file.txt'"}]}
+        opener = MagicMock()
+        opener.open.side_effect = [plan_response(plan), plan_response(plan)]
+        with patch("bravel.planner.build_opener", return_value=opener), self.assertRaises(PlanCheckError):
+            Planner(Settings(require_key=False)).make_plan("test", {"shell": "powershell", "agent_tools": {"processes": {}}})
+        self.assertEqual(opener.open.call_count, 2)
+
+    def test_check_allowlist_is_scoped_to_selected_shell(self):
+        step = {"command": "echo x", "explanation": "test", "risk": "low", "check": "pgrep -x -- 'incy'"}
+        content = json.dumps({"summary": "test", "steps": [step]})
+        self.assertEqual(parse_plan(content, 5, shell="bash").steps[0].check, step["check"])
+        with self.assertRaises(PlanCheckError):
+            parse_plan(content, 5, shell="powershell")
+        step["check"] = "[bool](Get-Process -Name 'incy' -ErrorAction SilentlyContinue)"
+        self.assertEqual(parse_plan(json.dumps({"summary": "test", "steps": [step]}), 5, shell="powershell").steps[0].check, step["check"])
+
     def test_mixed_plan_repaired_to_one_stage_without_executing_candidates(self):
         step = {"command": "Get-NetRoute", "explanation": "routes", "risk": "low"}
         tool = {"name": "network_info", "arguments": {}}

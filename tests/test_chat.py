@@ -8,7 +8,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 from bravel.agent import Agent
-from bravel.apps import SteamGame
 from bravel.chat import chat, run_task
 from bravel.config import Settings, ConsoleError
 from bravel.planner import Plan, Step
@@ -21,17 +20,17 @@ class Terminal(io.StringIO):
 
 
 class ChatTests(unittest.TestCase):
-    def test_local_commands_do_not_call_api_and_new_clears_inventory(self):
+    def test_local_commands_do_not_call_api_and_new_clears_history(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "destination").mkdir()
             agent = Agent(cwd=root, settings=Settings(api_key="test-hidden-secret"))
-            game = SteamGame(root / "steam.exe", root, "548430", "Deep Rock Galactic")
+            agent.history.append({"role": "user", "text": "previous conversation"})
             output = io.StringIO()
-            with patch("sys.stdin", Terminal()), patch("builtins.input", side_effect=["/help", "/games", "/history", "/cd destination", "/pwd", "/status", "/new", "/exit"]), patch("bravel.chat.installed_steam_games", return_value=[game]), patch("bravel.agent.Planner.make_plan") as planner:
+            with patch("sys.stdin", Terminal()), patch("builtins.input", side_effect=["/help", "/history", "/cd destination", "/pwd", "/status", "/new", "/exit"]), patch("bravel.agent.Planner.make_plan") as planner:
                 self.assertEqual(chat(agent, UI("never", output)), 0)
             planner.assert_not_called()
-            self.assertIn("Deep Rock Galactic", output.getvalue())
+            self.assertIn("previous conversation", output.getvalue())
             self.assertNotIn("test-hidden-secret", output.getvalue())
             self.assertEqual(agent.cwd, (root / "destination").resolve())
             self.assertEqual(agent.history, [])

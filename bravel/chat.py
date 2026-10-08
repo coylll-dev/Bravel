@@ -5,12 +5,10 @@ import json
 from pathlib import Path
 
 from .agent import Agent
-from .apps import installed_steam_games
 from .config import ConsoleError, Settings
 from .executor import approve, shell_argv
 from .planner import Plan, Step
 from .ui import UI
-from .programs import installed_applications
 from .sessions import Sessions
 from .privacy import redact_data
 from .context import context
@@ -28,8 +26,6 @@ HELP = """Напиши задачу обычными словами или на�
 /cd <путь>            Сменить папку без запроса к API
 /shell <имя>          powershell, cmd или bash
 /status               Провайдер, модель и наличие ключа
-/games                Установленные игры Steam
-/apps                 Найденные приложения и пути
 /continue             Проанализировать последний результат
 /history              Показать историю текущего диалога
 /new                  Очистить диалог, сохранив папку
@@ -45,7 +41,9 @@ Ctrl+C                Остановить команду или отменит�
 
 История и вывод команд используются в следующих запросах к выбранному API.
 По умолчанию история только в памяти; /save и --session сохраняют её на диск.
-Стрелки ↑/↓ — история, Tab — команды, Alt+Enter — новая строка.
+В редакторе: ↑/↓ — история, Tab — команды, Ctrl+J — новая строка, Enter — отправить.
+Для новой строки также можно последовательно нажать Esc, затем Enter.
+В --plain многострочный редактор отключён.
 exit и quit также закрывают Bravel."""
 
 
@@ -161,19 +159,6 @@ def chat(agent: Agent, ui: UI, *, plain: bool = False, session: str | None = Non
             if prompt == "/status":
                 settings = agent.settings or Settings.load()
                 ui.panel("НАСТРОЙКИ", f"Провайдер: {settings.provider}\nМодель: {settings.model}\nКлюч: {'задан' if settings.api_key and settings.api_key != 'your-api-key' else 'не задан'}\nОболочка: {agent.shell}\nПапка: {agent.cwd}\nРежим: {agent.mode}")
-                continue
-            if prompt == "/games":
-                games = installed_steam_games()
-                listing = "\n".join(f"{game.name} · Steam {game.app_id}" for game in games) or "Установленные игры в доступных библиотеках Steam не найдены."
-                ui.panel("STEAM", listing)
-                agent.history.append({"role": "local_inventory", "text": listing})
-                agent.history = agent.history[-12:]
-                continue
-            if prompt == "/apps":
-                listing = "\n".join(f"{app.name} · {app.executable}" for app in installed_applications()) or "Приложения не найдены в стандартных местах."
-                ui.panel("ПРИЛОЖЕНИЯ", listing)
-                agent.history.append({"role": "local_inventory", "text": listing})
-                agent.history = agent.history[-12:]
                 continue
             if prompt.startswith("/mode "):
                 mode = prompt[6:].strip()

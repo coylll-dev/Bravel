@@ -11,7 +11,7 @@ from .policy import read_only
 
 
 RISK_PATTERNS = (
-    r"\b(rm|rmdir|del|erase|remove-item|format|mkfs|diskpart|dd|shred)\b",
+    r"\b(rm|rmdir|del|erase|remove-item|format(?!-(?:table|list|wide|custom|hex)\b)|mkfs|diskpart|dd|shred)\b",
     r"\b(sudo|su|runas|chmod|chown|set-executionpolicy|reg|shutdown|reboot)\b",
     r"\b(install|uninstall|upgrade|iex|invoke-expression|invoke-webrequest|curl|wget)\b",
     r"\bgit\s+(reset|clean|push)\b",

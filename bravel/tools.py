@@ -35,23 +35,36 @@ class ToolCall:
     arguments: dict
 
 
-def validate(call: ToolCall) -> None:
+class ToolError(ConsoleError):
+    """Invalid model tool call; may be repaired once before any execution."""
+
+
+def normalize(call: ToolCall) -> ToolCall:
     if call.name not in SCHEMAS or not isinstance(call.arguments, dict):
-        raise ConsoleError("Неизвестный инструмент агента")
+        raise ToolError("Неизвестный инструмент или неверный объект параметров")
+    required = {"find_files": {"pattern"}, "read_text": {"path"}, "write_text": {"path", "content"}}.get(call.name, set())
+    optional = set(SCHEMAS[call.name]["arguments"]) - required
+    arguments = {key: value for key, value in call.arguments.items()
+                 if not (key in optional and (value is None or isinstance(value, str) and not value.strip()))}
+    return ToolCall(call.name, arguments)
+
+
+def validate(call: ToolCall) -> None:
+    call = normalize(call)
     allowed = set(SCHEMAS[call.name]["arguments"])
     if not set(call.arguments) <= allowed or any(not isinstance(value, str) for value in call.arguments.values()):
-        raise ConsoleError("Неверные параметры инструмента")
+        raise ToolError(f"Неверные параметры инструмента {call.name}; допустимы: {', '.join(sorted(allowed)) or 'без параметров'}")
     for key in ("path", "pattern", "query"):
         if key in call.arguments and (not call.arguments[key] or len(call.arguments[key]) > 2000 or any(c in call.arguments[key] for c in "\0\r\n")):
-            raise ConsoleError("Неверный путь или шаблон инструмента")
+            raise ToolError(f"Неверный параметр {key} инструмента {call.name}: нужна непустая строка без управляющих символов")
     if call.name in {"read_text", "write_text"} and not call.arguments.get("path"):
-        raise ConsoleError("Инструменту нужен путь файла")
+        raise ToolError("Инструменту нужен путь файла")
     if call.name == "write_text" and ("content" not in call.arguments or len(call.arguments["content"]) > 8000):
-        raise ConsoleError("Текст файла должен быть не длиннее 8000 символов")
+        raise ToolError("Текст файла должен быть не длиннее 8000 символов")
     if call.name == "write_text" and redact(call.arguments["content"]) != call.arguments["content"]:
-        raise ConsoleError("Текст содержит распознанные учётные данные; инструмент не записывает секреты")
+        raise ToolError("Текст содержит распознанные учётные данные; инструмент не записывает секреты")
     if call.name == "find_files" and (not call.arguments.get("pattern") or any(c in call.arguments["pattern"] for c in "/\\")):
-        raise ConsoleError("Нужен шаблон имени файла без пути")
+        raise ToolError("Нужен шаблон имени файла без пути")
 
 
 def resolve_path(cwd: Path, value: str) -> Path:
@@ -99,6 +112,7 @@ def group_processes(entries: list[dict], query: str = "") -> dict:
 
 
 def run(call: ToolCall, cwd: Path) -> dict:
+    call = normalize(call)
     validate(call)
     args = call.arguments
     if call.name == "games":

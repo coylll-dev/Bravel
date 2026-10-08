@@ -66,13 +66,32 @@ class FeaturesTests(unittest.TestCase):
                     self.assertEqual(read(), "/help")
                 finally:
                     enter.join()
-                for text, expected in (("first\r", "first"), ("\x1b[A\r", "first"), ("a\x1b\rb\r", "a\nb")):
+                for text, expected in (("first\r", "first"), ("\x1b[A\r", "first"), ("a\nb\nc\r", "a\nb\nc"), ("a\x1b\rb\r", "a\nb")):
                     typed = Timer(0.2, lambda value=text: pipe.send_text(value))
                     typed.start()
                     try:
                         self.assertEqual(read(), expected)
                     finally:
                         typed.join()
+
+    def test_display_formatting_does_not_trigger_disk_risk_but_mutations_do(self):
+        from bravel.executor import dangerous
+        command = "Get-Process | Sort-Object WorkingSet -Descending | Select-Object -First 10 Name, @{Name='Memory (MB)';Expression={'{0:N2}' -f ($_.WorkingSet / 1MB)}} | Format-Table -AutoSize"
+        self.assertFalse(dangerous(Step(command, "memory", "low")))
+        self.assertEqual(risk_reasons(Step(command, "memory", "low")), [])
+        for formatter in ("Format-Table", "Format-List", "Format-Wide", "Format-Custom", "Format-Hex"):
+            self.assertFalse(dangerous(Step("Get-Process | " + formatter, "display", "low")))
+        for command in ("format C:", "format.exe D:", "Format-Volume -DriveLetter D", "Format-Disk", "Get-Process | Format-Table; Remove-Item file", "Get-Process | Format-Table > file"):
+            self.assertTrue(dangerous(Step(command, "mutation", "low")), command)
+
+    def test_help_and_completion_expose_chat_controls_not_inventory_commands(self):
+        from bravel.chat import HELP
+        from bravel.input import COMMANDS
+        for command in ("/apps", "/games"):
+            self.assertNotIn(command, HELP)
+            self.assertNotIn(command, COMMANDS)
+        self.assertIn("Ctrl+J", HELP)
+        self.assertNotIn("Alt+Enter", HELP)
 
     def test_builtin_exit_and_clear_do_not_call_api(self):
         for exit_command in ("exit", "quit", "/exit", "/quit"):

@@ -3,15 +3,15 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 from bravel.agent import Agent
 from bravel.apps import SteamGame
 from bravel.chat import run_task
 from bravel.cli import parser
 from bravel.config import ConsoleError, Settings
-from bravel.planner import Plan, parse_plan
-from bravel.tools import ToolCall, run, validate, group_processes
+from bravel.planner import Plan, Planner, parse_plan
+from bravel.tools import SCHEMAS, ToolCall, run, validate, group_processes
 from bravel.ui import UI
 
 
@@ -41,6 +41,34 @@ class ToolTests(unittest.TestCase):
                 parse_plan(json.dumps({"summary": "test", "steps": [], "tools": [tool]}), 5)
         with self.assertRaises(ConsoleError):
             parse_plan(json.dumps({"summary": "test", "steps": [{"command": "echo x", "risk": "low", "explanation": "test"}], "tools": [{"name": "games", "arguments": {}}]}), 5)
+
+    def test_unused_optional_filters_and_roots_are_omitted_but_required_values_stay_strict(self):
+        for name, arguments in (("apps", {"query": ""}), ("processes", {"query": None}), ("find_files", {"path": " ", "pattern": "*.txt"})):
+            plan = parse_plan(json.dumps({"summary": "test", "steps": [], "tools": [{"name": name, "arguments": arguments}]}), 5)
+            self.assertEqual(plan.tools[0].arguments, {"pattern": "*.txt"} if name == "find_files" else {})
+        for name, arguments in (("read_text", {"path": ""}), ("write_text", {"path": None, "content": "test"}), ("find_files", {"pattern": ""}), ("apps", {"unexpected": None})):
+            with self.assertRaises(ConsoleError):
+                parse_plan(json.dumps({"summary": "test", "steps": [], "tools": [{"name": name, "arguments": arguments}]}), 5)
+
+    def test_invalid_tool_arguments_are_repaired_once_before_execution(self):
+        def response(arguments):
+            plan = {"summary": "test", "steps": [], "tools": [{"name": "apps", "arguments": arguments}]}
+            return io.BytesIO(json.dumps({"choices": [{"message": {"content": json.dumps(plan)}}]}).encode())
+        opener = MagicMock()
+        opener.open.side_effect = [response({"pattern": "python"}), response({"query": ""})]
+        with patch("bravel.planner.build_opener", return_value=opener), patch("bravel.tools.run") as execute:
+            plan = Planner(Settings(require_key=False)).make_plan("Найди программы для разработки", {"shell": "cmd", "agent_tools": SCHEMAS})
+        self.assertEqual(plan.tools[0].arguments, {})
+        self.assertEqual(opener.open.call_count, 2)
+        request = json.loads(opener.open.call_args.args[0].data)
+        user = json.loads(request["messages"][1]["content"])
+        self.assertIn("tool_repair", user["context"])
+        execute.assert_not_called()
+        opener.open.reset_mock()
+        opener.open.side_effect = [response({"pattern": "python"}), response({"pattern": "python"})]
+        with patch("bravel.planner.build_opener", return_value=opener), self.assertRaises(ConsoleError):
+            Planner(Settings(require_key=False)).make_plan("test", {"shell": "cmd", "agent_tools": SCHEMAS})
+        self.assertEqual(opener.open.call_count, 2)
 
     def test_file_read_requires_confirmation_and_decline_never_reads(self):
         agent = Agent(settings=Settings(require_key=False))

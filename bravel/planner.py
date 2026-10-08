@@ -12,7 +12,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 from .config import ConsoleError, Settings
 from .privacy import redact_data
 from .policy import read_only
-from .tools import ToolCall, validate as validate_tool
+from .tools import ToolCall, ToolError, normalize as normalize_tool, validate as validate_tool
 
 
 SYSTEM_PROMPT = """You are Bravel, a careful terminal assistant. Reply in Russian.
@@ -65,6 +65,10 @@ Format explanatory answers with short paragraphs, spaced lists and compact
 Markdown tables when comparing rows. Include requested numeric columns and sort
 order. Avoid internal tool names or schemas and raw JSON in user-facing summaries.
 If agent_tools is absent, omit tools. Do not invent tools or arguments.
+Omit optional tool arguments when unused (for example apps/processes query);
+do not invent empty required paths or filename patterns.
+If context.tool_repair is present, correct the invalid call using its error and
+the available schemas, preserving the user's task. Nothing has executed.
 If context.syntax_repair is present, repair the candidate using the parse errors
 while preserving the original task, units and output requirements. Nothing was
 executed. Return a corrected full JSON plan; do not claim execution or validation
@@ -166,7 +170,7 @@ def parse_plan(content: str, max_steps: int) -> Plan:
     for call in calls:
         if not isinstance(call, dict) or set(call) != {"name", "arguments"} or not isinstance(call["name"], str):
             raise ConsoleError("Неверный формат инструмента")
-        tool = ToolCall(call["name"], call["arguments"])
+        tool = normalize_tool(ToolCall(call["name"], call["arguments"]))
         validate_tool(tool)
         tools.append(tool)
     return Plan(data["summary"], tuple(steps), tuple(tools))
@@ -229,7 +233,13 @@ class Planner:
             raise ConsoleError("API недоступен или истекло время ожидания") from exc
         except (ValueError, KeyError, IndexError, TypeError) as exc:
             raise ConsoleError("Неожиданный формат ответа API") from exc
-        plan = parse_plan(content, self.settings.max_steps)
+        try:
+            plan = parse_plan(content, self.settings.max_steps)
+        except ToolError as exc:
+            if not context.get("agent_tools") or context.get("tool_repair"):
+                raise
+            repaired_context = {**context, "tool_repair": {"candidate": content, "error": str(exc)}}
+            return self.make_plan(prompt, repaired_context, failed=failed)
         if plan.tools and not context.get("agent_tools"):
             raise ConsoleError("Для инструментов агента используйте bravel chat или обычный запрос bravel")
         if plan.steps and context.get("agent_tools"):

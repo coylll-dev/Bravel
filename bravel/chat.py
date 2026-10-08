@@ -3,17 +3,18 @@ from __future__ import annotations
 import sys
 import json
 from pathlib import Path
+from datetime import datetime, timezone
 
 from .agent import Agent
 from .config import ConsoleError, Settings
 from .executor import approve, shell_argv
 from .planner import Plan, Step
-from .ui import UI
+from .ui import UI, output_preview
 from .sessions import Sessions
 from .privacy import redact_data
 from .context import context
 from .input import reader
-from .tools import resolve_path
+from .tools import resolve_path, SCHEMAS
 
 
 HELP = """Напиши задачу обычными словами или начни с #.
@@ -100,9 +101,9 @@ def run_task(agent: Agent, ui: UI, prompt: str, *, continuation: bool = False) -
             return 0
         output = agent.execute(result["plan_id"], approval="RUN" if result["dangerous"] else "approve")
         for item in output["results"]:
-            text = item["output"] or "Команда завершилась без вывода."
+            text = output_preview(item["output"]) or "Команда завершилась без вывода."
             if item["truncated"]:
-                text += "\n[Показана последняя часть вывода]"
+                text += "\n[Полный вывод превышает лимит контекста; проверка по этому выводу неполная]"
             if item["timed_out"]:
                 text += "\n[Остановлено: лимит времени или объёма вывода]"
             ui.panel(f"РЕЗУЛЬТАТ · код {item['exit_code']}", text)
@@ -180,11 +181,14 @@ def chat(agent: Agent, ui: UI, *, plain: bool = False, session: str | None = Non
             if prompt == "/context":
                 settings = agent.settings or Settings.load()
                 ctx = context(agent.shell)
-                ctx.update(cwd=str(agent.cwd), history=agent.history[-12:], shell_variables_persist=False)
+                ctx.update(cwd=str(agent.cwd), history=agent.history[-12:], shell_variables_persist=False,
+                           current_time=datetime.now(timezone.utc).isoformat(), agent_tools=SCHEMAS,
+                           task_request=agent.task_request, task_progress=agent.task_progress,
+                           remaining_cycles=max(0, 8 - agent.rounds), final_only=agent.rounds >= 8)
                 ui.panel("КОНТЕКСТ ДЛЯ API", json.dumps(redact_data(ctx, (settings.api_key,)), ensure_ascii=False, indent=2))
                 continue
             if prompt == "/privacy":
-                ui.panel("ДАННЫЕ", "API получает запрос, ОС, оболочку, текущую папку и последние 12 записей диалога (включая вывод).\n"
+                ui.panel("ДАННЫЕ", "API получает запрос, ОС, оболочку, текущую папку, последние 12 записей диалога и исходный запрос с кратким журналом текущей задачи.\n"
                          "Известный API-ключ, типовые токены, пароли и приватные ключи маскируются. Маскировка не гарантирует распознавание всех секретов.\n"
                          "API-ключ используется только для авторизации у выбранного провайдера. /context показывает контекст.\n"
                          "История ввода в памяти. /save или --session сохраняет очищенную историю локально; /delete удаляет файл.")

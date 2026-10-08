@@ -25,6 +25,13 @@ from .planner import Plan, Planner
 from .ui import safe_text
 
 
+def action_signature(plan: Plan):
+    if not plan.steps and not plan.tools:
+        return None
+    return (tuple((step.command.strip(), step.check.strip()) for step in plan.steps),
+            tuple((call.name, json.dumps(call.arguments, sort_keys=True, ensure_ascii=False)) for call in plan.tools))
+
+
 class Agent:
     def __init__(self, *, cwd: Path | None = None, shell: str | None = None, settings: Settings | None = None):
         self.cwd = (cwd or Path.cwd()).resolve()
@@ -39,6 +46,9 @@ class Agent:
         self._cancel = Event()
         self._lock = Lock()
         self._command_directories: list[tempfile.TemporaryDirectory] = []
+        self.task_request = ""
+        self.task_progress: list[dict] = []
+        self._last_action_signature = None
 
     def cancel(self) -> None:
         with self._lock:
@@ -51,6 +61,9 @@ class Agent:
         self.last_result = None
         self.rounds = 0
         self._failed_commands.clear()
+        self.task_request = ""
+        self.task_progress.clear()
+        self._last_action_signature = None
 
     def make_plan(self, prompt: str, *, continuation: bool = False) -> dict:
         with self._lock:
@@ -59,8 +72,6 @@ class Agent:
         if continuation:
             if self.last_result is None:
                 raise ConsoleError("Сначала выполните предложенный план.")
-            if self.rounds >= 8:
-                raise ConsoleError("Достигнут лимит 8 циклов. Начните новую задачу.")
             prompt = "Проанализируй результат последнего плана и ответь на исходный запрос пользователя фактическими данными. Если запрос был о списке или сведениях, покажи найденное, а не только сообщение об успехе. Если задача закончена, ответь без команд и инструментов; иначе предложи следующий шаг."
         else:
             prompt = prompt.strip()
@@ -69,15 +80,32 @@ class Agent:
             self.rounds = 0
             self.last_result = None
             self._failed_commands.clear()
+            self.task_request = prompt
+            self.task_progress.clear()
+            self._last_action_signature = None
         self.history.append({"role": "user", "text": prompt})
         settings = self.settings or Settings.load()
         self.settings = settings
         self.history = redact_data(self.history, (settings.api_key,))
+        self.task_request = redact_data(self.task_request, (settings.api_key,))
+        final_only = continuation and self.rounds >= 8
         ctx = context(self.shell)
         ctx.update(cwd=str(self.cwd), history=self.history[-12:], shell_variables_persist=False,
-                   current_time=datetime.now(timezone.utc).isoformat(), agent_tools=SCHEMAS)
+                   current_time=datetime.now(timezone.utc).isoformat(), agent_tools=SCHEMAS,
+                   task_request=self.task_request, task_progress=self.task_progress,
+                   remaining_cycles=max(0, 8 - self.rounds), final_only=final_only)
+        if final_only:
+            ctx["stop_reason"] = "Достигнут лимит исследования. Дай частичный ответ по наблюдениям, перечисли неизвестное; новых действий нет."
         plan = None if continuation else game_plan(prompt, self.shell)
         plan = plan or (None if continuation else launch_plan(prompt, self.shell)) or Planner(settings).make_plan(prompt, ctx)
+        signature = action_signature(plan)
+        if continuation and signature and signature == self._last_action_signature and not final_only:
+            final_only = True
+            ctx.update(final_only=True, stop_reason="Предложен повтор уже выполненного плана без новых данных. Обобщи наблюдения и объясни, что не установлено.")
+            plan = Planner(settings).make_plan(prompt, ctx)
+        if final_only and (plan.steps or plan.tools):
+            plan = Plan("Исследование остановлено: " + ctx["stop_reason"] +
+                        "\n\nМодель предложила дополнительные действия вместо итогового ответа; они не выполнены.\n" + plan.summary, ())
         if continuation and any(step.command.strip().casefold() in self._failed_commands for step in plan.steps):
             raise ConsoleError("Этот план повторяет уже неудачную команду без изменений. Уточните задачу; повтор автоматически не выполняется.")
         if continuation and any("tool:" + call.name + json.dumps(call.arguments, sort_keys=True) in self._failed_commands for call in plan.tools):
@@ -151,12 +179,20 @@ class Agent:
                 break
         self.last_result = {"results": results, "cancelled": self._cancel.is_set(), "cwd": str(self.cwd)}
         self.last_result = redact_data(self.last_result, (self.settings.api_key,) if self.settings else ())
+        self._last_action_signature = action_signature(plan) if self.last_result["results"] and not self.last_result["cancelled"] and all(item["exit_code"] == 0 for item in self.last_result["results"]) else None
+        for item in self.last_result["results"]:
+            output = item.get("output", "")
+            excerpt = output if len(output) <= 2400 else output[:1600] + "\n[Пропущена середина записи]\n" + output[-800:]
+            self.task_progress.append({"command": item.get("command"), "exit_code": item["exit_code"],
+                                       "observed_at": item.get("observed_at"), "output_excerpt": excerpt,
+                                       "excerpt_incomplete": item.get("truncated", False) or len(output) > 2400})
+        self.task_progress = self.task_progress[-40:]
         self.history.append({"role": "command_results", **self.last_result})
         return self.last_result
 
     def _run(self, command: str) -> dict:
         # Files avoid pipe deadlocks and bound RAM even if a command floods stdout.
-        # Keep only a small tail for the model; every command remains explicitly approved.
+        # Preserve table headers and the end of bounded output for the model.
         # Launched apps can inherit stdout and keep it open after the shell exits.
         # Do not kill the requested app or fail the task over a Windows file lock.
         # Retry cleanup on later commands, once the app releases the handle.
@@ -201,10 +237,16 @@ class Agent:
                     raise
                 output.seek(0, 2)
                 size = output.tell()
-                output.seek(max(0, size - 12000))
-                raw = output.read(12000)
+                output.seek(0)
+                head = output.read(6000 if size > 12000 else 12000)
+                if size > 12000:
+                    output.seek(size - 6000)
+                    tail = output.read(6000)
             encoding = "utf-8-sig" if self.shell != "cmd" or os.name != "nt" else "oem"
-            text = safe_text(raw.decode(encoding, errors="replace"))
+            text = head.decode(encoding, errors="ignore")
+            if size > 12000:
+                text += "\n[Пропущена середина вывода: показаны начало и конец]\n" + tail.decode(encoding, errors="ignore")
+            text = safe_text(text)
             if cwd_file.exists() and process.returncode == 0:
                 candidate = Path(cwd_file.read_text(encoding="utf-8-sig", errors="replace").strip())
                 if candidate.is_dir():

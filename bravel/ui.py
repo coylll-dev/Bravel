@@ -22,6 +22,16 @@ def safe_text(value: str) -> str:
     return redact("".join(c if c == "\n" or not unicodedata.category(c).startswith("C") else "?" for c in value))
 
 
+def output_preview(value: str) -> str:
+    """Bound displayed command output; model context retains its larger excerpt."""
+    lines = safe_text(value).strip("\n").splitlines()
+    if len(lines) <= 40 and sum(len(line) for line in lines) <= 5000:
+        return "\n".join(lines)
+    head = "\n".join(lines[:25])[:3200]
+    tail = "\n".join(lines[-10:])[-1500:]
+    return head + "\n\n[Сокращённый показ: начало и конец; агент получает больше данных]\n\n" + tail
+
+
 class UI:
     def __init__(self, color: str = "auto", stream: TextIO | None = None, *, terminal: bool = False):
         self.stream = stream or sys.stderr

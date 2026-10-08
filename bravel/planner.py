@@ -15,6 +15,10 @@ from .policy import read_only
 from .tools import ToolCall, ToolError, normalize as normalize_tool, validate as validate_tool
 
 
+class PlanJSONError(ConsoleError):
+    pass
+
+
 SYSTEM_PROMPT = """You are Bravel, a careful terminal assistant. Reply in Russian.
 Produce ONLY a JSON object: {"summary": string, "steps": [{"command": string,
 "explanation": string, "risk": "low"|"medium"|"high", "check": optional string}],
@@ -34,6 +38,10 @@ apps first and report only evidence of games, excluding utilities/runtimes.
 Process names alone do not identify every application. Unknown names (including
 short names) must not be dismissed: use paths and installed-software metadata to
 investigate, distinguish installed from running and VPN from an active connection.
+Avoid narrowing an identification task to a hardcoded list of familiar product
+names: unknown applications may be relevant. A Wintun interface or routed traffic
+does not identify its owner. TCP connection owners are application clients and
+need not be the process managing a tunnel. Distinguish evidence from assumptions.
 Respect user corrections about an application's identity in later turns.
 There is no built-in web search tool. Never claim to have searched the Internet,
 checked official sources or that a website does not exist without actual evidence.
@@ -69,6 +77,18 @@ Omit optional tool arguments when unused (for example apps/processes query);
 do not invent empty required paths or filename patterns.
 If context.tool_repair is present, correct the invalid call using its error and
 the available schemas, preserving the user's task. Nothing has executed.
+If context.response_repair is present, return valid JSON matching this contract;
+the previous response could not be parsed and nothing has executed.
+context.task_request is the original CURRENT task, even if recent history no
+longer includes it. context.task_progress preserves earlier outcomes, but excerpts
+can be incomplete. Do not repeat broad queries already performed; select a new,
+targeted observation that can distinguish competing explanations. Empty output
+from a narrow filter is not proof of absence. Truncated output cannot establish
+that an unshown process, file or service is absent.
+When remaining_cycles is low, prioritize answering rather than collecting more
+generic lists. If context.final_only is true, return empty steps AND tools: give
+confirmed facts, uncertain hypotheses and the specific missing evidence. State
+clearly if the original question remains unresolved; do not ask to run more commands.
 If context.syntax_repair is present, repair the candidate using the parse errors
 while preserving the original task, units and output requirements. Nothing was
 executed. Return a corrected full JSON plan; do not claim execution or validation
@@ -143,7 +163,7 @@ def parse_plan(content: str, max_steps: int) -> Plan:
     try:
         data = json.loads(content)
     except (ValueError, TypeError) as exc:
-        raise ConsoleError("Модель вернула невалидный JSON. Команды не выполнены.") from exc
+        raise PlanJSONError("Модель вернула невалидный JSON. Команды не выполнены.") from exc
     if not isinstance(data, dict) or not isinstance(data.get("summary"), str) or not isinstance(data.get("steps"), list):
         raise ConsoleError("Ответ модели не соответствует формату плана")
     if len(data["summary"]) > 8000 or len(data["steps"]) > max_steps:
@@ -235,14 +255,15 @@ class Planner:
             raise ConsoleError("Неожиданный формат ответа API") from exc
         try:
             plan = parse_plan(content, self.settings.max_steps)
-        except ToolError as exc:
-            if not context.get("agent_tools") or context.get("tool_repair"):
+        except (ToolError, PlanJSONError) as exc:
+            key = "tool_repair" if isinstance(exc, ToolError) else "response_repair"
+            if not context.get("agent_tools") or context.get(key):
                 raise
-            repaired_context = {**context, "tool_repair": {"candidate": content, "error": str(exc)}}
+            repaired_context = {**context, key: {"candidate": content, "error": str(exc)}}
             return self.make_plan(prompt, repaired_context, failed=failed)
         if plan.tools and not context.get("agent_tools"):
             raise ConsoleError("Для инструментов агента используйте bravel chat или обычный запрос bravel")
-        if plan.steps and context.get("agent_tools"):
+        if plan.steps and context.get("agent_tools") and not context.get("final_only"):
             from .syntax import syntax_errors
             errors = syntax_errors(context.get("shell", ""), [step.command for step in plan.steps])
             if errors:

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bravel"
-version = "0.6.3"
+version = "0.6.4"
 description = "An AI sidekick for your existing PowerShell and Bash terminal"
 readme = "README.md"
 requires-python = ">=3.10"

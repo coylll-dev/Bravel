@@ -6,10 +6,18 @@ from unittest.mock import patch
 
 from rich.cells import cell_len
 
-from bravel.ui import UI
+from bravel.ui import UI, output_preview
 
 
 class FormattingTests(unittest.TestCase):
+    def test_large_output_preview_is_bounded_without_losing_header_and_end(self):
+        output = "HEADER\n" + "\n".join(f"record {index}" for index in range(500)) + "\nTAIL\n\n"
+        preview = output_preview(output)
+        self.assertIn("HEADER", preview)
+        self.assertIn("TAIL", preview)
+        self.assertLess(len(preview.splitlines()), 45)
+        self.assertLess(len(preview), 5000)
+        self.assertEqual(output_preview("\nName CPU\nchrome 2.5\n\n"), "Name CPU\nchrome 2.5")
     def test_answers_render_markdown_lists_and_tables_without_literal_markers(self):
         stream = io.StringIO()
         UI("never", stream).answer("**Сеть**\n\n- `Ethernet`: локальная сеть.\n\n| Процесс | ЦП |\n| --- | ---: |\n| chrome | 2.5% |")

@@ -23,6 +23,70 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(safe_text("192.0.2.1\r\nsecond\r\n"), "192.0.2.1\nsecond\n")
         self.assertEqual(safe_text("rewrite\rhidden\x1b"), "rewrite?hidden?")
 
+    def test_original_task_survives_short_history_and_budget_returns_partial_answer(self):
+        agent = Agent(settings=Settings(require_key=False))
+        with patch("bravel.agent.Planner.make_plan", return_value=Plan("inspect", (Step("echo first", "read"),))):
+            plan = agent.make_plan("Identify the application managing this tunnel")
+        with patch.object(agent, "_run", return_value={"command": "echo first", "exit_code": 0, "output": "Observed tunnel adapter", "cancelled": False, "timed_out": False}):
+            agent.execute(plan["plan_id"], approval="approve")
+        agent.history = [{"role": "assistant", "summary": f"intermediate {index}"} for index in range(20)]
+        agent.rounds = 8
+        with patch("bravel.agent.Planner.make_plan", return_value=Plan("Adapter observed; owner remains unconfirmed", ())) as model:
+            result = agent.make_plan("", continuation=True)
+        ctx = model.call_args.args[1]
+        self.assertEqual(ctx["task_request"], "Identify the application managing this tunnel")
+        self.assertIn("Observed tunnel adapter", str(ctx["task_progress"]))
+        self.assertTrue(ctx["final_only"])
+        self.assertEqual(ctx["remaining_cycles"], 0)
+        self.assertIn("owner remains unconfirmed", result["summary"])
+        self.assertIsNone(agent.pending)
+
+    def test_repeated_successful_plan_requests_final_answer_without_executing_again(self):
+        agent = Agent(settings=Settings(require_key=False))
+        candidate = Plan("inspect", (Step("echo observation", "read"),))
+        with patch("bravel.agent.Planner.make_plan", return_value=candidate):
+            plan = agent.make_plan("Investigate")
+        with patch.object(agent, "_run", return_value={"command": "echo observation", "exit_code": 0, "output": "facts", "cancelled": False, "timed_out": False}) as execute:
+            agent.execute(plan["plan_id"], approval="approve")
+            with patch("bravel.agent.Planner.make_plan", side_effect=[candidate, Plan("Need more evidence to identify owner", ())]) as model:
+                answer = agent.make_plan("", continuation=True)
+        execute.assert_called_once()
+        self.assertEqual(model.call_count, 2)
+        self.assertTrue(model.call_args.args[1]["final_only"])
+        self.assertEqual(answer["steps"], [])
+        self.assertIsNone(agent.pending)
+
+    def test_final_only_cannot_publish_an_action_even_if_model_ignores_stop(self):
+        agent = Agent(settings=Settings(require_key=False))
+        agent.rounds = 8
+        agent.last_result = {"results": []}
+        with patch("bravel.agent.Planner.make_plan", return_value=Plan("Want another query", (Step("echo more", "read"),))):
+            result = agent.make_plan("", continuation=True)
+        self.assertEqual(result["steps"], [])
+        self.assertEqual(result["tools"], [])
+        self.assertIn("не выполнены", result["summary"])
+        self.assertIsNone(agent.pending)
+
+    def test_new_task_and_reset_clear_pinned_progress(self):
+        agent = Agent(settings=Settings(require_key=False))
+        agent.task_progress = [{"output_excerpt": "previous task"}]
+        with patch("bravel.agent.Planner.make_plan", return_value=Plan("answer", ())):
+            agent.make_plan("new task")
+        self.assertEqual(agent.task_request, "new task")
+        self.assertEqual(agent.task_progress, [])
+        agent.reset()
+        self.assertEqual(agent.task_request, "")
+
+    def test_long_command_output_keeps_header_and_tail_with_explicit_gap(self):
+        agent = Agent(settings=Settings(require_key=False))
+        command = "Write-Output 'HEADER-Columns'; 1..2000 | ForEach-Object { Write-Output ('row-' + $_ + '-long-value') }; Write-Output 'TAIL-END'" if os.name == "nt" else "printf 'HEADER-Columns\\n'; for i in {1..2000}; do printf 'row-%s-long-value\\n' \"$i\"; done; printf 'TAIL-END\\n'"
+        result = agent._run(command)
+        self.assertEqual(result["exit_code"], 0)
+        self.assertTrue(result["truncated"])
+        self.assertIn("HEADER-Columns", result["output"])
+        self.assertIn("TAIL-END", result["output"])
+        self.assertIn("Пропущена середина", result["output"])
+
     def test_launched_child_holding_output_does_not_crash_agent(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

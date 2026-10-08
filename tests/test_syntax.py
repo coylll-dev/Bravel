@@ -20,6 +20,17 @@ def api_response(command):
 
 
 class SyntaxTests(unittest.TestCase):
+    def test_malformed_json_is_repaired_once_without_execution(self):
+        malformed = MagicMock()
+        malformed.__enter__.return_value = io.BytesIO(json.dumps({"choices": [{"message": {"content": "not JSON"}}]}).encode())
+        opener = MagicMock()
+        opener.open.side_effect = [malformed, api_response("echo repaired")]
+        with patch("bravel.planner.build_opener", return_value=opener), patch("bravel.syntax.syntax_errors", return_value=[]):
+            plan = Planner(Settings(require_key=False)).make_plan("task", {"shell": "cmd", "agent_tools": {"processes": {}}})
+        self.assertEqual(plan.steps[0].command, "echo repaired")
+        self.assertEqual(opener.open.call_count, 2)
+        request = json.loads(opener.open.call_args.args[0].data)
+        self.assertIn("response_repair", json.loads(request["messages"][1]["content"])["context"])
     def test_parse_only_never_creates_files_and_detects_invalid_source(self):
         with tempfile.TemporaryDirectory() as directory:
             marker = Path(directory) / "must-not-exist.txt"

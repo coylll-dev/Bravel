@@ -19,6 +19,10 @@ class PlanJSONError(ConsoleError):
     pass
 
 
+class PlanStructureError(ConsoleError):
+    pass
+
+
 SYSTEM_PROMPT = """You are Bravel, a careful terminal assistant. Reply in Russian.
 Produce ONLY a JSON object: {"summary": string, "steps": [{"command": string,
 "explanation": string, "risk": "low"|"medium"|"high", "check": optional string}],
@@ -78,7 +82,10 @@ do not invent empty required paths or filename patterns.
 If context.tool_repair is present, correct the invalid call using its error and
 the available schemas, preserving the user's task. Nothing has executed.
 If context.response_repair is present, return valid JSON matching this contract;
-the previous response could not be parsed and nothing has executed.
+use its error to correct the previous response. Nothing has executed. If it mixed
+tools and shell steps, choose ONLY the first necessary stage: either tools with
+empty steps, or steps with empty/omitted tools. Wait for actual results before
+planning the next stage. Stay within max_steps; never claim omitted actions ran.
 context.task_request is the original CURRENT task, even if recent history no
 longer includes it. context.task_progress preserves earlier outcomes, but excerpts
 can be incomplete. Do not repeat broad queries already performed; select a new,
@@ -166,8 +173,10 @@ def parse_plan(content: str, max_steps: int) -> Plan:
         raise PlanJSONError("Модель вернула невалидный JSON. Команды не выполнены.") from exc
     if not isinstance(data, dict) or not isinstance(data.get("summary"), str) or not isinstance(data.get("steps"), list):
         raise ConsoleError("Ответ модели не соответствует формату плана")
-    if len(data["summary"]) > 8000 or len(data["steps"]) > max_steps:
+    if len(data["summary"]) > 8000:
         raise ConsoleError("Ответ модели превысил допустимый размер плана")
+    if len(data["steps"]) > max_steps:
+        raise PlanStructureError(f"В плане не должно быть больше {max_steps} действий. Ничего не выполнено.")
     steps = []
     for item in data["steps"]:
         if not isinstance(item, dict):
@@ -184,8 +193,12 @@ def parse_plan(content: str, max_steps: int) -> Plan:
             raise ConsoleError("Проверка результата должна быть простой командой только для чтения")
         steps.append(Step(command, explanation, risk, check))
     calls = data.get("tools", [])
-    if not isinstance(calls, list) or len(calls) + len(steps) > max_steps or (calls and steps):
-        raise ConsoleError("Инструменты и команды должны быть отдельными планами в пределах лимита")
+    if not isinstance(calls, list):
+        raise PlanStructureError("Поле tools должно быть списком. Ничего не выполнено.")
+    if calls and steps:
+        raise PlanStructureError("Инструменты и shell-команды должны быть отдельными этапами: выберите первый необходимый этап. Ничего не выполнено.")
+    if len(calls) > max_steps:
+        raise PlanStructureError(f"В плане не должно быть больше {max_steps} действий. Ничего не выполнено.")
     tools = []
     for call in calls:
         if not isinstance(call, dict) or set(call) != {"name", "arguments"} or not isinstance(call["name"], str):
@@ -255,7 +268,7 @@ class Planner:
             raise ConsoleError("Неожиданный формат ответа API") from exc
         try:
             plan = parse_plan(content, self.settings.max_steps)
-        except (ToolError, PlanJSONError) as exc:
+        except (ToolError, PlanJSONError, PlanStructureError) as exc:
             key = "tool_repair" if isinstance(exc, ToolError) else "response_repair"
             if not context.get("agent_tools") or context.get(key):
                 raise

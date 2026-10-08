@@ -84,14 +84,14 @@ class ToolTests(unittest.TestCase):
             with self.assertRaises(ConsoleError):
                 validate(ToolCall("write_text", {"path": "note.txt", "content": "API_KEY=secret-value"}))
 
-    def test_file_search_and_read_are_bounded_and_do_not_follow_links(self):
+    def test_file_search_and_read_are_bounded_and_skip_dependency_directories(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "a.txt").write_text("A" * 33000)
             (root / ".venv").mkdir()
             (root / ".venv/skip.txt").write_text("skip")
             data = run(ToolCall("find_files", {"pattern": "*.txt"}), root)
-            self.assertEqual(data["matches"], [str(root / "a.txt")])
+            self.assertEqual([Path(value).resolve() for value in data["matches"]], [(root / "a.txt").resolve()])
             data = run(ToolCall("read_text", {"path": "a.txt"}), root)
             self.assertTrue(data["truncated"])
             self.assertEqual(len(data["text"]), 32000)

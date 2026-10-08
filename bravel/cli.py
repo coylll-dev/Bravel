@@ -67,7 +67,8 @@ def main(argv: list[str] | None = None) -> int:
     if arguments[0].startswith("--") and arguments[0] not in {"--help", "--version"}:
         suggestion = difflib.get_close_matches(arguments[0], ["--help", "--version"], n=1, cutoff=0.7)
         if suggestion:
-            parser().error(f"неизвестный параметр {arguments[0]}. Возможно, вы имели в виду {suggestion[0]}?")
+            UI(stream=sys.stderr).error(f"Неизвестный параметр {arguments[0]}. Возможно, вы имели в виду {suggestion[0]}?")
+            raise SystemExit(2)
     actions = {"ask", "fix", "doctor", "version", "init", "configure", "update", "rollback", "uninstall", "integration", "demo", "chat", "agent"}
     if arguments and not arguments[0].startswith("-") and arguments[0] not in actions:
         arguments.insert(0, "ask")

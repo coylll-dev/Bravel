@@ -20,8 +20,8 @@ SCHEMAS = {
     "games": {"description": "Installed Steam games; does not launch anything", "arguments": {}},
     "apps": {"description": "Apps: Windows installed-software registry plus launchable PATH/App Paths apps; Linux desktop entries. Optional case-insensitive name/path filter. Incomplete inventory, not proof of absence", "arguments": {"query": "optional name/path substring"}},
     "system_info": {"description": "OS, CPU count, disk space for current directory", "arguments": {}},
-    "processes": {"description": "Current processes grouped by executable, with names/PIDs and paths when accessible, no command-line arguments. Optional name/path substring filter; names alone do not prove VPN identity", "arguments": {"query": "optional name/path substring"}},
-    "network_info": {"description": "Local IP addresses and interfaces; not public Internet IP", "arguments": {}},
+    "processes": {"description": "Current processes grouped by executable, names/PIDs/paths only: NO CPU load or memory metrics. Optional name/path substring filter; names alone do not prove VPN identity", "arguments": {"query": "optional name/path substring"}},
+    "network_info": {"description": "Local interface IP addresses ONLY: no adapter hardware/status, routes, active socket connections or public Internet IP. Use approved shell commands when the request needs these missing details", "arguments": {}},
     "list_directory": {"description": "Directory entries, types and sizes; does not read contents", "arguments": {"path": "optional directory path"}},
     "find_files": {"description": "Case-insensitive file AND directory name search, depth 5, 3 seconds. Reports root and incomplete reasons; empty matches NEVER prove absence outside the checked scope", "arguments": {"path": "optional root", "pattern": "filename glob, e.g. *incy*"}},
     "read_text": {"description": "Read UTF-8 text (up to 32 KB); requires user approval, rejects credential files", "arguments": {"path": "file path"}},
@@ -137,8 +137,10 @@ def run(call: ToolCall, cwd: Path) -> dict:
                     pass
         return group_processes(entries, args.get("query", ""))
     if call.name == "network_info":
-        command = "[Console]::OutputEncoding=[Text.Encoding]::UTF8; Get-NetIPAddress | Select-Object -First 100 InterfaceAlias,IPAddress,AddressFamily | ConvertTo-Json -Compress" if os.name == "nt" else "ip -brief address"
-        return {"local_interfaces": fixed_command("powershell" if os.name == "nt" else "bash", command)}
+        command = "[Console]::OutputEncoding=[Text.Encoding]::UTF8; ConvertTo-Json -Compress -InputObject @(Get-NetIPAddress | Select-Object -First 100 InterfaceAlias,IPAddress,AddressFamily)" if os.name == "nt" else "ip -brief address"
+        raw = fixed_command("powershell" if os.name == "nt" else "bash", command)
+        return {"local_interfaces": json.loads(raw) if os.name == "nt" else raw,
+                "scope": "local interface addresses only; no hardware/status/routes/active socket connections/public IP"}
     path = resolve_path(cwd, args.get("path", "."))
     if call.name == "list_directory":
         entries = []

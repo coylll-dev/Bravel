@@ -5,7 +5,7 @@ import json
 import re
 import unicodedata
 from . import __version__
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
@@ -45,7 +45,30 @@ Answer information questions with the actual requested facts/list, not just
 Use only the tools needed for the current request. Never mix tools and shell
 steps in one plan. Metadata tools run locally; text reads require approval and
 file writes require RUN with a full content preview. Credentials are excluded.
+Tools cover a limited set of observations, not your full capabilities. Read each
+tool's description: when the requested data, operation or sorting is unavailable,
+compose suitable shell commands yourself for approval. Do not silently substitute
+an easier task, omit a requested metric/order/filter, or declare success without
+the requested data. After tool results, continue with commands if details are missing.
+For current CPU load, obtain a current measurement (sample CPU-time deltas or an
+OS metric). Get-Process CPU is lifetime processor seconds, not current load percent.
+Memory fields (WorkingSet/WorkingSet64/RSS) measure bytes and NEVER measure CPU.
+Before returning a command, check that each requested column has the right source,
+units and computation, that percentages have a denominator and that the requested
+sort is actually present. CPU-time deltas require two snapshots of CPU seconds,
+actual elapsed seconds and logical processor count for a 0..100 whole-machine
+percentage, multiplied by 100. Do not label byte differences as CPU or percent.
+For network analysis, names/IP ranges alone are hints, not proof of hardware,
+VPN ownership, Internet routing or DHCP failure. Obtain descriptions/status/routes
+with approved commands when needed; distinguish observations from hypotheses.
+Format explanatory answers with short paragraphs, spaced lists and compact
+Markdown tables when comparing rows. Include requested numeric columns and sort
+order. Avoid internal tool names or schemas and raw JSON in user-facing summaries.
 If agent_tools is absent, omit tools. Do not invent tools or arguments.
+If context.syntax_repair is present, repair the candidate using the parse errors
+while preserving the original task, units and output requirements. Nothing was
+executed. Return a corrected full JSON plan; do not claim execution or validation
+of actual results. Syntax checking does not establish semantic correctness.
 For a file creation or app launch include a simple read-only check when possible.
 Allowed checks: PowerShell Test-Path -LiteralPath 'path' or
 [bool](Get-Process -Name 'name' -ErrorAction SilentlyContinue);
@@ -65,6 +88,10 @@ For follow-up questions retain the latest topic; do not switch to generic help
 when the user asks what alternatives exist for the preceding request.
 If context.shell_variables_persist is false, each step starts a fresh shell.
 Set and use required variables within the same single-line command.
+Commands already execute inside the selected shell. For PowerShell, write the
+script directly; do not nest powershell/pwsh -Command inside it (the outer shell
+would expand variables in double quotes). To pipe a foreach statement result,
+assign it to a variable first or use ForEach-Object in a pipeline.
 At most the supplied max_steps. Do not invent installed paths, programs or files.
 For app discovery, provide a read-only search command. Agent history can contain
 previous command results; use them to propose the next step or explain the result.
@@ -205,6 +232,14 @@ class Planner:
         plan = parse_plan(content, self.settings.max_steps)
         if plan.tools and not context.get("agent_tools"):
             raise ConsoleError("Для инструментов агента используйте bravel chat или обычный запрос bravel")
+        if plan.steps and context.get("agent_tools"):
+            from .syntax import syntax_errors
+            errors = syntax_errors(context.get("shell", ""), [step.command for step in plan.steps])
+            if errors:
+                if context.get("syntax_repair"):
+                    raise ConsoleError("Модель повторно вернула план с ошибкой синтаксиса. Команды не выполнены.")
+                repaired_context = {**context, "syntax_repair": {"candidate": asdict(plan), "errors": errors}}
+                return self.make_plan(prompt, repaired_context, failed=failed)
         return plan
 
 

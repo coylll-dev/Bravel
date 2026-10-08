@@ -50,7 +50,7 @@ def shell_argv(shell: str, command: str) -> list[str]:
 
 
 def approve(plan: Plan, ui: UI, *, mode: str = "ask", shell: str = "") -> tuple[Step, ...]:
-    ui.panel("ПЛАН", plan.summary)
+    ui.answer(plan.summary, title="ПЛАН" if plan.steps else "ОТВЕТ")
     for index, step in enumerate(plan.steps, 1):
         high = dangerous(step)
         body = step.command + "\n\n" + step.explanation

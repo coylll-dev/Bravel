@@ -3,12 +3,17 @@ from __future__ import annotations
 import os
 import shutil
 import sys
-import textwrap
 import unicodedata
 from typing import TextIO
 from contextlib import contextmanager
 from threading import Event, Thread
 from .privacy import redact
+from rich import box
+from rich.console import Console
+from rich.markdown import Markdown
+from rich.padding import Padding
+from rich.panel import Panel
+from rich.text import Text
 
 
 def safe_text(value: str) -> str:
@@ -72,14 +77,19 @@ class UI:
             self.stream.write("\r" + " " * (len(message) + 6) + "\r")
             self.stream.flush()
 
-    def panel(self, title: str, body: str, tone: str = "96") -> None:
+    def panel(self, title: str, body: str, tone: str = "96", *, markdown: bool = False) -> None:
         width = max(12, min(shutil.get_terminal_size((88, 24)).columns - 3, 100))
-        title = safe_text(title).replace("\n", " ")[:width - 6]
-        self.write(self.paint("  ╭─ " + title + " " + "─" * (width - len(title) - 5) + "╮", tone))
-        for line in safe_text(body).splitlines():
-            for part in textwrap.wrap(line, width - 4, replace_whitespace=False, drop_whitespace=False) or [""]:
-                self.write(self.paint("  │ ", tone) + part.ljust(width - 4) + self.paint(" │", tone))
-        self.write(self.paint("  ╰" + "─" * (width - 2) + "╯", tone))
+        console = Console(file=self.stream, width=width + 2, height=24, force_terminal=self.color,
+                          color_system="standard" if self.color else None, highlight=False,
+                          legacy_windows=False, safe_box=False)
+        content = Markdown(safe_text(body), hyperlinks=False) if markdown else Text(safe_text(body))
+        style = {"96": "cyan", "93": "yellow", "91": "red"}.get(tone, "cyan")
+        panel = Panel(content, title=Text(safe_text(title).replace("\n", " ")), title_align="left",
+                      border_style=style, box=box.ROUNDED, padding=(0, 1), width=width)
+        console.print(Padding(panel, (0, 0, 0, 2)))
+
+    def answer(self, body: str, *, title: str = "ОТВЕТ") -> None:
+        self.panel(title, body, markdown=True)
 
     def confirm(self, *, dangerous: bool = False) -> bool:
         if not sys.stdin.isatty():

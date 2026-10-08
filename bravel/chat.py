@@ -54,7 +54,7 @@ def run_task(agent: Agent, ui: UI, prompt: str, *, continuation: bool = False) -
         result = agent.make_plan(prompt, continuation=continuation)
     while True:
         if calls := result.get("tools"):
-            ui.panel("АГЕНТ", result["summary"])
+            ui.answer(result["summary"], title="АГЕНТ")
             for call in calls:
                 arguments = dict(call["arguments"])
                 if "path" in arguments:
@@ -79,6 +79,12 @@ def run_task(agent: Agent, ui: UI, prompt: str, *, continuation: bool = False) -
                     ui.note(f"Получено записей: {len(entries)}. Агент анализирует названия и пути.")
                 elif item["tool"] == "processes":
                     ui.note(f"Проверено процессов: {item['data']['scanned_processes']}; групп: {item['data']['total_groups']}.")
+                elif item["tool"] == "network_info":
+                    ui.note("Получены локальные сетевые адреса. Агент анализирует результат.")
+                elif item["tool"] == "list_directory":
+                    ui.note(f"Прочитана папка {item['data']['path']}: записей {len(item['data']['entries'])}.")
+                elif item["tool"] == "system_info":
+                    ui.note("Получены сведения об ОС, процессоре и диске.")
                 elif item["tool"] == "find_files":
                     data = item["data"]
                     ui.note(f"Поиск в {data['root']}: найдено {len(data['matches'])}." +

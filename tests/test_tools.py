@@ -152,6 +152,17 @@ class ToolTests(unittest.TestCase):
         self.assertIn("Найден INCY", output.getvalue())
         self.assertNotIn('"pids"', output.getvalue())
 
+    def test_network_output_uses_summary_instead_of_escaped_json(self):
+        agent = Agent(settings=Settings(require_key=False))
+        plans = [Plan("Проверю адреса", (), (ToolCall("network_info", {}),)), Plan("**Ethernet**: 192.168.0.209", ())]
+        data = {"local_interfaces": [{"InterfaceAlias": "Ethernet", "IPAddress": "192.168.0.209"}]}
+        output = io.StringIO()
+        with patch("bravel.agent.Planner.make_plan", side_effect=plans), patch("bravel.agent.run_tool", return_value=data):
+            run_task(agent, UI("never", output), "Какие сетевые адреса?")
+        self.assertIn("192.168.0.209", output.getvalue())
+        self.assertNotIn("local_interfaces", output.getvalue())
+        self.assertNotIn("**Ethernet**", output.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

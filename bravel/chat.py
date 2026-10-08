@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import json
 from pathlib import Path
 
 from .agent import Agent
@@ -9,6 +10,11 @@ from .config import ConsoleError, Settings
 from .executor import approve, shell_argv
 from .planner import Plan, Step
 from .ui import UI
+from .programs import installed_applications
+from .sessions import Sessions
+from .privacy import redact_data
+from .context import context
+from .input import reader
 
 
 HELP = """Напиши задачу обычными словами или начни с #.
@@ -16,27 +22,38 @@ HELP = """Напиши задачу обычными словами или на�
 После выполнения агент анализирует вывод и предлагает следующий шаг.
 
 /help                 Подсказка
+/clear                Очистить экран Bravel (также clear, cls)
 /pwd                  Текущая папка агента
 /cd <путь>            Сменить папку без запроса к API
 /shell <имя>          powershell, cmd или bash
 /status               Провайдер, модель и наличие ключа
 /games                Установленные игры Steam
+/apps                 Найденные приложения и пути
 /continue             Проанализировать последний результат
 /history              Показать историю текущего диалога
 /new                  Очистить диалог, сохранив папку
+/mode ask|preview|read-only  Подтверждение, просмотр или разрешённое чтение
+/save <имя>           Сохранить диалог с маскировкой известных секретов
+/load <имя>           Загрузить прошлый диалог без исполнения планов
+/sessions             Список сохранённых диалогов
+/delete <имя>         Удалить сохранённый диалог
+/context              Данные контекста для следующего запроса
+/privacy              Как используются данные
 /exit                 Выйти
 Ctrl+C                Остановить команду или отменить запрос
 
 История и вывод команд используются в следующих запросах к выбранному API.
-Они хранятся только в памяти этой сессии."""
+По умолчанию история только в памяти; /save и --session сохраняют её на диск.
+Стрелки ↑/↓ — история, Tab — команды, Alt+Enter — новая строка.
+exit и quit также закрывают Bravel."""
 
 
 def run_task(agent: Agent, ui: UI, prompt: str, *, continuation: bool = False) -> int:
-    ui.note("Анализирую результат…" if continuation else "Составляю план…")
-    result = agent.make_plan(prompt, continuation=continuation)
+    with ui.busy("Анализирую результат…" if continuation else "Составляю план…"):
+        result = agent.make_plan(prompt, continuation=continuation)
     while True:
-        plan = Plan(result["summary"], tuple(Step(s["command"], s["explanation"], s["risk"]) for s in result["steps"]))
-        steps = approve(plan, ui)
+        plan = Plan(result["summary"], tuple(Step(s["command"], s["explanation"], s["risk"], s.get("check", "")) for s in result["steps"]))
+        steps = approve(plan, ui, mode=agent.mode, shell=agent.shell)
         if not steps:
             agent.cancel()
             return 0
@@ -48,25 +65,43 @@ def run_task(agent: Agent, ui: UI, prompt: str, *, continuation: bool = False) -
             if item["timed_out"]:
                 text += "\n[Остановлено: лимит времени или объёма вывода]"
             ui.panel(f"РЕЗУЛЬТАТ · код {item['exit_code']}", text)
+            if verification := item.get("verification"):
+                ui.panel("ПРОВЕРКА РЕЗУЛЬТАТА", ("Условие подтверждено наблюдением." if verification["status"] == "observed" else
+                         "Условие не подтверждено. Не считаем запуск или изменение проверенным.") +
+                         "\n" + verification["command"] + "\n" + verification["output"])
         if output["cancelled"]:
             return 130
-        ui.note("Проверяю результат…")
-        result = agent.make_plan("", continuation=True)
+        with ui.busy("Анализирую вывод…"):
+            result = agent.make_plan("", continuation=True)
 
 
-def chat(agent: Agent, ui: UI) -> int:
+def chat(agent: Agent, ui: UI, *, plain: bool = False, session: str | None = None) -> int:
     if not sys.stdin.isatty():
         raise ConsoleError("Диалог требует интерактивный терминал. Для одного запроса используйте bravel ask.")
     ui.banner()
     ui.note(f"Оболочка: {agent.shell}. Папка: {agent.cwd}")
     ui.note("Напиши задачу. /help — команды, /exit — выход. Вывод команд входит в контекст диалога.")
+    sessions = Sessions()
+    if session:
+        if session in sessions.names():
+            sessions.load(session, agent)
+            ui.note("Загружена сохранённая история; старые результаты требуют новой проверки.")
+        else:
+            sessions.path(session)
+        ui.note(f"Автосохранение диалога: {session}")
+    read = reader(ui, plain=plain)
     while True:
         try:
-            prompt = input(ui.paint("\n  bravel › ", "1;96")).strip()
+            prompt = read().strip()
             if not prompt:
                 continue
-            if prompt in {"/exit", "/quit"}:
+            if prompt.casefold() in {"/exit", "/quit", "exit", "quit"}:
+                if session:
+                    sessions.save(session, agent)
                 return 0
+            if prompt.casefold() in {"/clear", "clear", "cls"}:
+                ui.clear()
+                continue
             if prompt == "/help":
                 ui.panel("ДИАЛОГ", HELP)
                 continue
@@ -79,7 +114,7 @@ def chat(agent: Agent, ui: UI) -> int:
                 continue
             if prompt == "/status":
                 settings = agent.settings or Settings.load()
-                ui.panel("НАСТРОЙКИ", f"Провайдер: {settings.provider}\nМодель: {settings.model}\nКлюч: {'задан' if settings.api_key and settings.api_key != 'your-api-key' else 'не задан'}\nОболочка: {agent.shell}\nПапка: {agent.cwd}")
+                ui.panel("НАСТРОЙКИ", f"Провайдер: {settings.provider}\nМодель: {settings.model}\nКлюч: {'задан' if settings.api_key and settings.api_key != 'your-api-key' else 'не задан'}\nОболочка: {agent.shell}\nПапка: {agent.cwd}\nРежим: {agent.mode}")
                 continue
             if prompt == "/games":
                 games = installed_steam_games()
@@ -87,6 +122,41 @@ def chat(agent: Agent, ui: UI) -> int:
                 ui.panel("STEAM", listing)
                 agent.history.append({"role": "local_inventory", "text": listing})
                 agent.history = agent.history[-12:]
+                continue
+            if prompt == "/apps":
+                listing = "\n".join(f"{app.name} · {app.executable}" for app in installed_applications()) or "Приложения не найдены в стандартных местах."
+                ui.panel("ПРИЛОЖЕНИЯ", listing)
+                agent.history.append({"role": "local_inventory", "text": listing})
+                agent.history = agent.history[-12:]
+                continue
+            if prompt.startswith("/mode "):
+                mode = prompt[6:].strip()
+                if mode not in {"ask", "preview", "read-only"}:
+                    raise ConsoleError("Режим: ask, preview или read-only")
+                agent.mode = mode
+                agent.cancel()
+                ui.note(f"Режим этой сессии: {mode}. Запуск приложений и изменения требуют подтверждения.")
+                continue
+            if prompt == "/sessions":
+                ui.panel("ДИАЛОГИ", "\n".join(sessions.names()) or "Сохранённых диалогов нет.")
+                continue
+            if prompt.startswith(("/save ", "/load ", "/delete ")):
+                action, name = prompt.split(" ", 1)
+                name = name.strip()
+                getattr(sessions, action[1:])(name, agent) if action != "/delete" else sessions.delete(name)
+                ui.note(f"Диалог {name}: {'сохранён' if action == '/save' else 'загружен' if action == '/load' else 'удалён'}.")
+                continue
+            if prompt == "/context":
+                settings = agent.settings or Settings.load()
+                ctx = context(agent.shell)
+                ctx.update(cwd=str(agent.cwd), history=agent.history[-12:], shell_variables_persist=False)
+                ui.panel("КОНТЕКСТ ДЛЯ API", json.dumps(redact_data(ctx, (settings.api_key,)), ensure_ascii=False, indent=2))
+                continue
+            if prompt == "/privacy":
+                ui.panel("ДАННЫЕ", "API получает запрос, ОС, оболочку, текущую папку и последние 12 записей диалога (включая вывод).\n"
+                         "Известный API-ключ, типовые токены, пароли и приватные ключи маскируются. Маскировка не гарантирует распознавание всех секретов.\n"
+                         "API-ключ используется только для авторизации у выбранного провайдера. /context показывает контекст.\n"
+                         "История ввода в памяти. /save или --session сохраняет очищенную историю локально; /delete удаляет файл.")
                 continue
             if prompt.startswith("/shell "):
                 shell = prompt[7:].strip()
@@ -121,7 +191,11 @@ def chat(agent: Agent, ui: UI) -> int:
             if prompt.startswith("/") and prompt != "/continue":
                 raise ConsoleError("Неизвестная команда диалога. /help — подсказка.")
             run_task(agent, ui, prompt.removeprefix("#").strip(), continuation=prompt == "/continue")
+            if session:
+                sessions.save(session, agent)
         except EOFError:
+            if session:
+                sessions.save(session, agent)
             return 0
         except KeyboardInterrupt:
             agent.cancel()

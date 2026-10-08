@@ -78,5 +78,6 @@ def managed_action(action: str, *, purge: bool, ui: UI) -> int:
     environment = os.environ.copy()
     environment["PYTHONUTF8"] = "1"
     subprocess.Popen(command, env=environment, **kwargs)
-    ui.note(f"{'Обновление' if action == 'update' else 'Удаление'} запущено. Откройте новый терминал после завершения.")
+    label = {"update": "Обновление", "uninstall": "Удаление", "rollback": "Откат"}[action]
+    ui.note(f"{label} запущено. Дождитесь итогового сообщения и проверьте bravel version.")
     return 0

@@ -7,6 +7,7 @@ import subprocess
 from .config import ConsoleError
 from .planner import Plan, Step
 from .ui import UI
+from .policy import read_only
 
 
 RISK_PATTERNS = (
@@ -24,6 +25,16 @@ def dangerous(step: Step) -> bool:
     return step.risk == "high" or any(re.search(pattern, step.command, re.I) for pattern in RISK_PATTERNS)
 
 
+def risk_reasons(step: Step) -> list[str]:
+    labels = ("удаление или изменение диска", "права, система или привилегии",
+              "установка, загрузка или интерпретация кода", "изменение Git",
+              "запись или перенаправление вывода", "вложенный интерпретатор")
+    reasons = [label for pattern, label in zip(RISK_PATTERNS, labels) if re.search(pattern, step.command, re.I)]
+    if step.risk == "high":
+        reasons.append("модель указала высокий риск")
+    return reasons
+
+
 def shell_argv(shell: str, command: str) -> list[str]:
     if shell == "powershell":
         executable = shutil.which("pwsh") or shutil.which("powershell")
@@ -38,13 +49,26 @@ def shell_argv(shell: str, command: str) -> list[str]:
     return [executable, "-c", command]
 
 
-def approve(plan: Plan, ui: UI) -> tuple[Step, ...]:
+def approve(plan: Plan, ui: UI, *, mode: str = "ask", shell: str = "") -> tuple[Step, ...]:
     ui.panel("ПЛАН", plan.summary)
     for index, step in enumerate(plan.steps, 1):
         high = dangerous(step)
-        ui.panel(f"{index}/{len(plan.steps)} · {'ПОВЫШЕННЫЙ РИСК' if high else step.risk.upper()}", step.command + "\n\n" + step.explanation, "93" if high else "96")
+        body = step.command + "\n\n" + step.explanation
+        if step.check:
+            body += "\nПроверка результата: " + step.check
+        if high:
+            body += "\nПричина RUN: " + "; ".join(risk_reasons(step))
+        elif read_only(step.command, shell):
+            body += "\nBravel: команда входит в локальный список чтения."
+        ui.panel(f"{index}/{len(plan.steps)} · {'ПОВЫШЕННЫЙ РИСК' if high else step.risk.upper()}", body, "93" if high else "96")
     if not plan.steps:
         return ()
+    if mode == "preview":
+        ui.note("Режим просмотра: команды не выполнены.")
+        return ()
+    if mode == "read-only" and all(not dangerous(step) and read_only(step.command, shell) for step in plan.steps):
+        ui.note("План разрешён локальным списком команд чтения в этой сессии.")
+        return plan.steps
     if len(plan.steps) > 1:
         ui.note("Подтверждение разрешает весь показанный план. Выполнение остановится при ошибке.")
     if not ui.confirm(dangerous=any(dangerous(step) for step in plan.steps)):
@@ -70,6 +94,20 @@ def script_for(steps: tuple[Step, ...], shell: str) -> str:
 def execute(steps: tuple[Step, ...], shell: str, ui: UI) -> int:
     if not steps:
         return 0
+    if any(step.check for step in steps):
+        from .agent import Agent
+        import uuid
+        agent = Agent(shell=shell)
+        identifier = uuid.uuid4().hex
+        agent.pending = (identifier, Plan("Подтверждённый план", steps))
+        result = agent.execute(identifier, approval="RUN" if any(dangerous(step) for step in steps) else "approve")
+        code = 0
+        for item in result["results"]:
+            code = item["exit_code"]
+            ui.panel(f"РЕЗУЛЬТАТ · код {code}", item["output"] or "Команда завершилась без вывода.")
+            if check := item.get("verification"):
+                ui.panel("ПРОВЕРКА", ("Условие наблюдается." if check["status"] == "observed" else "Условие не подтверждено.") + "\n" + check["output"])
+        return code
     ui.note("Запуск подтверждённого плана…")
     try:
         code = subprocess.run(shell_argv(shell, script_for(steps, shell)), check=False).returncode

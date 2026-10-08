@@ -12,6 +12,10 @@ from pathlib import Path
 from threading import Event, Lock
 
 from .apps import game_plan
+from .programs import launch_plan
+from .policy import read_only
+from .privacy import redact_data
+from datetime import datetime, timezone
 from .config import ConsoleError, Settings
 from .context import context, shell_name
 from .executor import dangerous, shell_argv
@@ -28,6 +32,7 @@ class Agent:
         self.pending: tuple[str, Plan] | None = None
         self.last_result: dict | None = None
         self.rounds = 0
+        self.mode = "ask"
         self._cancel = Event()
         self._lock = Lock()
         self._command_directories: list[tempfile.TemporaryDirectory] = []
@@ -61,10 +66,13 @@ class Agent:
             self.last_result = None
         self.history.append({"role": "user", "text": prompt})
         settings = self.settings or Settings.load()
+        self.settings = settings
+        self.history = redact_data(self.history, (settings.api_key,))
         ctx = context(self.shell)
-        ctx.update(cwd=str(self.cwd), history=self.history[-12:], shell_variables_persist=False)
+        ctx.update(cwd=str(self.cwd), history=self.history[-12:], shell_variables_persist=False,
+                   current_time=datetime.now(timezone.utc).isoformat())
         plan = None if continuation else game_plan(prompt, self.shell)
-        plan = plan or Planner(settings).make_plan(prompt, ctx)
+        plan = plan or (None if continuation else launch_plan(prompt, self.shell)) or Planner(settings).make_plan(prompt, ctx)
         self.rounds += 1
         identifier = uuid.uuid4().hex
         with self._lock:
@@ -73,6 +81,7 @@ class Agent:
             self.pending = (identifier, plan) if plan.steps else None
         self.history.append({"role": "assistant", "summary": plan.summary,
                              "steps": [asdict(step) for step in plan.steps]})
+        self.history = redact_data(self.history, (settings.api_key,))
         self.history = self.history[-12:]
         return {"plan_id": identifier, "summary": safe_text(plan.summary),
                 "steps": [{**asdict(step), "dangerous": dangerous(step)} for step in plan.steps],
@@ -90,13 +99,28 @@ class Agent:
             self._cancel.clear()
         results = []
         for step in plan.steps:
+            if step.check and not read_only(step.check, self.shell):
+                raise ConsoleError("Проверка результата не подходит для текущей оболочки")
             if self._cancel.is_set():
                 break
             result = self._run(step.command)
+            result["observed_at"] = datetime.now(timezone.utc).isoformat()
+            if step.check and result["exit_code"] == 0 and not result["cancelled"] and not result["timed_out"]:
+                verification = self._run(step.check)
+                observed = verification["exit_code"] == 0
+                if self.shell == "powershell":
+                    observed = observed and verification["output"].strip().casefold() == "true"
+                if not observed and not verification["cancelled"] and not verification["timed_out"]:
+                    time.sleep(0.4)
+                    verification = self._run(step.check)
+                    observed = verification["exit_code"] == 0 and (self.shell != "powershell" or verification["output"].strip().casefold() == "true")
+                result["verification"] = {"command": step.check, "status": "observed" if observed else "not_observed",
+                                          "output": verification["output"], "exit_code": verification["exit_code"]}
             results.append(result)
             if result["exit_code"] != 0 or result["cancelled"] or result["timed_out"]:
                 break
         self.last_result = {"results": results, "cancelled": self._cancel.is_set(), "cwd": str(self.cwd)}
+        self.last_result = redact_data(self.last_result, (self.settings.api_key,) if self.settings else ())
         self.history.append({"role": "command_results", **self.last_result})
         return self.last_result
 

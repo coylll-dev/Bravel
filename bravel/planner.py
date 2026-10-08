@@ -10,11 +10,22 @@ from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from .config import ConsoleError, Settings
+from .privacy import redact_data
+from .policy import read_only
 
 
 SYSTEM_PROMPT = """You are Bravel, a careful terminal assistant. Reply in Russian.
 Produce ONLY a JSON object: {"summary": string, "steps": [{"command": string,
-"explanation": string, "risk": "low"|"medium"|"high"}]}.
+"explanation": string, "risk": "low"|"medium"|"high", "check": optional string}]}.
+For a file creation or app launch include a simple read-only check when possible.
+Allowed checks: PowerShell Test-Path -LiteralPath 'path' or
+[bool](Get-Process -Name 'name' -ErrorAction SilentlyContinue);
+Bash test -e 'path' or pgrep -x -- 'name'. Otherwise omit check.
+A check must be a separate command, never include writes or shell operators.
+Historical records and saved sessions are not current observations. Recheck
+changing facts when requested (IP, files, processes); do not reuse an old IP.
+Read verification results: observed means the stated condition was observed;
+not_observed/failed means do not claim success. It does not prove a new process.
 Use commands for the supplied OS and shell. Prefer one simple command at a time.
 If context.shell_variables_persist is false, each step starts a fresh shell.
 Set and use required variables within the same single-line command.
@@ -48,6 +59,7 @@ class Step:
     command: str
     explanation: str
     risk: str = "low"
+    check: str = ""
 
 
 @dataclass(frozen=True)
@@ -77,7 +89,12 @@ def parse_plan(content: str, max_steps: int) -> Plan:
             raise ConsoleError("Небезопасный формат команды: пустая строка, перенос или управляющий символ")
         if not isinstance(explanation, str) or len(explanation) > 8000 or risk not in {"low", "medium", "high"}:
             raise ConsoleError("Неверное описание или риск шага")
-        steps.append(Step(command, explanation, risk))
+        check = item.get("check", "")
+        if not isinstance(check, str) or len(check) > 2000 or (check and
+            (any(unicodedata.category(c).startswith("C") for c in check) or
+             not any(read_only(check, shell) for shell in ("powershell", "cmd", "bash")))):
+            raise ConsoleError("Проверка результата должна быть простой командой только для чтения")
+        steps.append(Step(command, explanation, risk, check))
     return Plan(data["summary"], tuple(steps))
 
 
@@ -93,7 +110,7 @@ class Planner:
 
     def make_plan(self, prompt: str, context: dict, *, failed: bool = False) -> Plan:
         self.settings.validate_key()
-        user_content = json.dumps({"request": prompt, "context": context, "command_not_found": failed, "max_steps": self.settings.max_steps}, ensure_ascii=False)
+        user_content = json.dumps(redact_data({"request": prompt, "context": context, "command_not_found": failed, "max_steps": self.settings.max_steps}, (self.settings.api_key,)), ensure_ascii=False)
         headers = {"Content-Type": "application/json", "User-Agent": "bravel/" + __version__}
         if self.settings.provider == "gemini":
             payload = {

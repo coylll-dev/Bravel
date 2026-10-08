@@ -6,12 +6,15 @@ import sys
 import textwrap
 import unicodedata
 from typing import TextIO
+from contextlib import contextmanager
+from threading import Event, Thread
+from .privacy import redact
 
 
 def safe_text(value: str) -> str:
     # No terminal escape sequences, bidi controls, or carriage-return rewriting.
     value = value.replace("\r\n", "\n")
-    return "".join(c if c == "\n" or not unicodedata.category(c).startswith("C") else "?" for c in value)
+    return redact("".join(c if c == "\n" or not unicodedata.category(c).startswith("C") else "?" for c in value))
 
 
 class UI:
@@ -34,6 +37,40 @@ class UI:
 
     def error(self, message: str) -> None:
         self.write(self.paint("  ✕ " + message, "91"))
+
+    def clear(self) -> None:
+        if self.stream.isatty():
+            # This escape sequence is owned by the UI, never supplied by a model.
+            if os.name == "nt":
+                import subprocess
+                subprocess.run([os.environ.get("COMSPEC", "cmd.exe"), "/d", "/c", "cls"], check=False)
+            else:
+                self.stream.write("\033[2J\033[H")
+                self.stream.flush()
+
+    @contextmanager
+    def busy(self, message: str):
+        if not self.stream.isatty():
+            self.note(message)
+            yield
+            return
+        stopped = Event()
+        def animate():
+            index = 0
+            while not stopped.wait(0.15):
+                self.stream.write("\r  " + "|/-\\"[index % 4] + " " + safe_text(message))
+                self.stream.flush()
+                index += 1
+        self.note(message)
+        thread = Thread(target=animate, daemon=True)
+        thread.start()
+        try:
+            yield
+        finally:
+            stopped.set()
+            thread.join()
+            self.stream.write("\r" + " " * (len(message) + 6) + "\r")
+            self.stream.flush()
 
     def panel(self, title: str, body: str, tone: str = "96") -> None:
         width = max(12, min(shutil.get_terminal_size((88, 24)).columns - 3, 100))

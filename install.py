@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import time
+import tempfile
 import venv
 from pathlib import Path
 
@@ -208,6 +209,78 @@ def remove_legacy_desktop(root: Path, previous: dict | None) -> None:
         remove_desktop_shortcuts(root, previous)
 
 
+def owned_child(root: Path, path: Path) -> Path:
+    if path.is_symlink() or root.resolve() not in path.resolve().parents:
+        raise RuntimeError("Небезопасный путь снимка Bravel")
+    return path
+
+
+def snapshot_data(root: Path) -> dict:
+    backup = owned_child(root, root / "rollback")
+    data = json.loads((backup / "snapshot.json").read_text(encoding="utf-8"))
+    if data.get("app") != "bravel-snapshot" or data.get("root") != str(root.resolve()):
+        raise RuntimeError("Папка rollback не принадлежит Bravel; она не изменена")
+    return data
+
+
+def make_snapshot(root: Path, manifest: dict, version: str) -> None:
+    backup = owned_child(root, root / "rollback")
+    if backup.exists():
+        snapshot_data(root)
+    stage = Path(tempfile.mkdtemp(prefix="bravel-snapshot-", dir=root))
+    try:
+        (stage / "snapshot.json").write_text(json.dumps({"app": "bravel-snapshot", "root": str(root.resolve()),
+                                                       "version": version, "manifest": manifest}), encoding="utf-8")
+        shutil.copytree(owned_child(root, root / "venv"), stage / "venv", symlinks=True)
+        for name in ("hooks",):
+            if (root / name).exists():
+                shutil.copytree(owned_child(root, root / name), stage / name, symlinks=True)
+        if (root / "installer.py").is_file():
+            shutil.copy2(root / "installer.py", stage / "installer.py")
+        if backup.exists():
+            shutil.rmtree(owned_child(root, backup))
+        stage.rename(backup)
+        print(f"  ✓ Снимок для отката: {version}. Команда: bravel rollback")
+    finally:
+        if stage.exists():
+            shutil.rmtree(owned_child(root, stage))
+
+
+def rollback(root: Path) -> None:
+    root = root.expanduser().absolute()
+    load_manifest(root)
+    data = snapshot_data(root)
+    backup = owned_child(root, root / "rollback")
+    source = owned_child(root, backup / "venv")
+    if not source.is_dir():
+        raise RuntimeError("Снимок не содержит окружение Bravel")
+    environment = owned_child(root, root / "venv")
+    displaced = Path(tempfile.mkdtemp(prefix="bravel-replaced-", dir=root))
+    displaced.rmdir()
+    try:
+        environment.rename(displaced)
+        try:
+            source.rename(environment)
+        except OSError:
+            displaced.rename(environment)
+            raise
+        for name in ("hooks",):
+            destination = owned_child(root, root / name)
+            saved = owned_child(root, backup / name)
+            if saved.exists():
+                if destination.exists():
+                    shutil.rmtree(destination)
+                saved.rename(destination)
+        if (backup / "installer.py").is_file():
+            shutil.copy2(backup / "installer.py", root / "installer.py")
+        (root / "bravel-install.json").write_text(json.dumps(data["manifest"], indent=2), encoding="utf-8")
+        print(f"  ✓ Откат завершён: Bravel {data['version']}. API-конфиг сохранён.")
+    finally:
+        if displaced.exists() and environment.exists():
+            shutil.rmtree(owned_child(root, displaced))
+    shutil.rmtree(owned_child(root, backup))
+
+
 def install(root: Path, *, source: str | None = None, profiles: list[tuple[str, Path]] | None = None, provider: str | None = None, configure: bool = True, register_path: bool = True) -> None:
     root = root.expanduser().absolute()
     marker = root / "bravel-install.json"
@@ -221,11 +294,16 @@ def install(root: Path, *, source: str | None = None, profiles: list[tuple[str, 
                 selected.append((item["shell"], Path(item["path"])))
     for _, path in selected:
         remove_block(profile_text(path))
+    environment = root / "venv"
+    python = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    if previous and python.is_file():
+        version = subprocess.run([str(python), "-I", "-m", "bravel", "--version"], check=True, capture_output=True, encoding="utf-8").stdout.strip()
+        print(f"  · Текущая версия: {version}")
+        make_snapshot(root, previous, version)
     root.mkdir(parents=True, exist_ok=True)
     manifest = {"app": "bravel", "root": str(root.resolve()), "profiles": [{"shell": shell, "path": str(path.absolute())} for shell, path in selected], "source": source or SOURCE_URL,
                 "register_path": register_path, "path_added": bool(previous and previous.get("path_added"))}
     marker.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-    environment = root / "venv"
     if not environment.exists():
         venv.EnvBuilder(with_pip=True).create(environment)
     python = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
@@ -233,11 +311,16 @@ def install(root: Path, *, source: str | None = None, profiles: list[tuple[str, 
     package_source = source or (str(local) if (local / "pyproject.toml").exists() else SOURCE_URL)
     pip_environment = os.environ.copy()
     pip_environment["PYTHONUTF8"] = "1"
-    subprocess.run([str(python), "-m", "pip", "install", "--upgrade", package_source], check=True, env=pip_environment)
+    try:
+        subprocess.run([str(python), "-m", "pip", "install", "--upgrade", package_source], check=True, env=pip_environment)
+    except subprocess.CalledProcessError:
+        if previous and (root / "rollback/snapshot.json").is_file():
+            rollback(root)
+        raise
     hooks = root / "hooks"
     hooks.mkdir(exist_ok=True)
     for suffix, shell in (("ps1", "powershell"), ("bash", "bash")):
-        result = subprocess.run([str(python), "-m", "bravel", "integration", shell], check=True, capture_output=True, encoding="utf-8")
+        result = subprocess.run([str(python), "-I", "-m", "bravel", "integration", shell], check=True, capture_output=True, encoding="utf-8")
         source_hook = Path(result.stdout.strip())
         (hooks / f"bravel.{suffix}").write_text(source_hook.read_text(encoding="utf-8-sig"), encoding="utf-8-sig" if suffix == "ps1" else "utf-8")
     cached = root / "installer.py"
@@ -257,6 +340,8 @@ def install(root: Path, *, source: str | None = None, profiles: list[tuple[str, 
     if configure:
         subprocess.run(configure_command(python, provider), check=True)
     remove_legacy_desktop(root, previous)
+    version = subprocess.run([str(python), "-I", "-m", "bravel", "--version"], check=True, capture_output=True, encoding="utf-8").stdout.strip()
+    print(f"  ✓ Установка завершена: Bravel {version}")
     usage_instructions(root, selected)
 
 
@@ -321,7 +406,7 @@ def main(argv: list[str] | None = None) -> int:
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(description="Установить/удалить Bravel без прав администратора")
-    parser.add_argument("action", nargs="?", choices=("install", "update", "uninstall"), default="install")
+    parser.add_argument("action", nargs="?", choices=("install", "update", "rollback", "uninstall"), default="install")
     parser.add_argument("--prefix", type=Path, default=default_root())
     parser.add_argument("--shell", choices=("auto", "powershell", "bash"), default="auto")
     parser.add_argument("--profile", type=Path)
@@ -339,6 +424,8 @@ def main(argv: list[str] | None = None) -> int:
             wait_for_parent(args.wait_pid)
         if args.action == "uninstall":
             uninstall(args.prefix, purge=args.purge)
+        elif args.action == "rollback":
+            rollback(args.prefix)
         else:
             if args.action == "update":
                 data = load_manifest(args.prefix)

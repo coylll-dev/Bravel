@@ -7,6 +7,7 @@ from pathlib import Path
 
 from . import __version__
 from .apps import game_plan
+from .programs import launch_plan
 from .config import ConsoleError, Settings, PROVIDERS, config_path, template
 from .context import context, shell_name
 from .executor import approve, execute, script_for
@@ -27,7 +28,9 @@ def parser() -> argparse.ArgumentParser:
         cmd.add_argument("--emit-command", action="store_true", help="Для интеграций: вернуть подтверждённый скрипт в stdout")
         cmd.add_argument("--command-file", type=Path, help="Для PowerShell: записать подтверждённый скрипт в файл")
         cmd.add_argument("text", nargs="+", help="Запрос или неизвестная команда")
-    sub.add_parser("doctor", help="Проверить локальные настройки без запроса к API")
+    cmd = sub.add_parser("doctor", help="Проверить настройки, PATH и подключение оболочки")
+    cmd.add_argument("--api", action="store_true", help="Также проверить API и модель коротким запросом")
+    sub.add_parser("version", help="Показать версию")
     cmd = sub.add_parser("init", help="Создать шаблон конфигурации")
     cmd.add_argument("--path", type=Path, help="Путь к новому .env")
     cmd.add_argument("--provider", choices=tuple(PROVIDERS), default="openai")
@@ -35,6 +38,7 @@ def parser() -> argparse.ArgumentParser:
     cmd.add_argument("--provider", choices=tuple(PROVIDERS))
     cmd.add_argument("--path", type=Path)
     sub.add_parser("update", help="Обновить управляемую установку")
+    sub.add_parser("rollback", help="Вернуться к снимку перед последним обновлением")
     cmd = sub.add_parser("uninstall", help="Удалить Bravel и подключение")
     cmd.add_argument("--purge", action="store_true", help="Также удалить стандартный .env")
     cmd = sub.add_parser("integration", help="Вывести путь к скрипту подключения")
@@ -42,8 +46,12 @@ def parser() -> argparse.ArgumentParser:
     sub.add_parser("demo", help="Показать интерфейс без API и запуска команд")
     cmd = sub.add_parser("chat", help="Интерактивный диалог с агентом")
     cmd.add_argument("--shell", choices=("powershell", "bash", "cmd"))
+    cmd.add_argument("--plain", action="store_true", help="Обычный ввод без редактора строк")
+    cmd.add_argument("--session", help="Именованный диалог с загрузкой и автосохранением")
+    cmd.add_argument("--mode", choices=("ask", "preview", "read-only"), default="ask")
     cmd = sub.add_parser("agent", help="Диалог с анализом результатов команд")
     cmd.add_argument("--shell", choices=("powershell", "bash", "cmd"))
+    cmd.add_argument("--dry-run", action="store_true", help="Показать план без выполнения")
     cmd.add_argument("text", nargs="+")
     return result
 
@@ -55,20 +63,24 @@ def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     ui = UI(stream=None if getattr(args, "emit_command", False) else sys.stdout, terminal=sys.stdin.isatty())
     try:
+        if args.action == "version":
+            print(__version__)
+            return 0
         if args.action in {"agent", "chat"}:
             from .chat import chat, run_task
             agent = Agent(cwd=Path.cwd(), shell=args.shell)
+            agent.mode = getattr(args, "mode", "preview" if getattr(args, "dry_run", False) else "ask")
             try:
                 if args.action == "agent":
                     ui.banner()
-                return chat(agent, ui) if args.action == "chat" else run_task(agent, ui, " ".join(args.text))
+                return chat(agent, ui, plain=args.plain, session=args.session) if args.action == "chat" else run_task(agent, ui, " ".join(args.text))
             except KeyboardInterrupt:
                 agent.cancel()
                 ui.note("Остановлено пользователем.")
                 return 130
         if args.action == "configure":
             return configure(args.provider, args.path, ui)
-        if args.action in {"update", "uninstall"}:
+        if args.action in {"update", "rollback", "uninstall"}:
             return managed_action(args.action, purge=getattr(args, "purge", False), ui=ui)
         if args.action == "integration":
             suffix = "ps1" if args.shell == "powershell" else "bash"
@@ -97,12 +109,8 @@ def main(argv: list[str] | None = None) -> int:
         emit_mode = bool(getattr(args, "emit_command", False))
         ui = UI(settings.color, None if emit_mode else sys.stdout, terminal=not emit_mode and sys.stdin.isatty())
         if args.action == "doctor":
-            ui.banner()
-            ui.note(f"Провайдер: {settings.provider}")
-            ui.panel("НАСТРОЙКИ", f"Конфиг: {config_path()}\nAPI: {settings.base_url}\nМодель: {settings.model}\nКлюч: {'задан' if settings.api_key and settings.api_key != 'your-api-key' else 'не задан'}\nPython: {sys.version.split()[0]}\nShell: {shell_name()}\nКоманды: {', '.join(context(shell_name())['available_commands'])}")
-            settings.validate_key()
-            ui.note("Локальные настройки корректны. Соединение с API не проверялось.")
-            return 0
+            from .diagnostics import doctor
+            return doctor(settings, ui, api=args.api)
         shell = shell_name(args.shell)
         prompt = " ".join(args.text).strip()
         if args.action == "ask":
@@ -111,17 +119,14 @@ def main(argv: list[str] | None = None) -> int:
             raise ConsoleError("Запрос должен содержать от 1 до 16000 символов")
         ui.banner()
         ctx = context(shell)
-        plan = local_fix(prompt, ctx) if args.action == "fix" else game_plan(prompt, shell)
+        plan = local_fix(prompt, ctx) if args.action == "fix" else game_plan(prompt, shell) or launch_plan(prompt, shell)
         if plan:
             ui.note("Результат найден локально — запрос к API не нужен.")
         else:
             ui.note("Составляю план…")
             plan = Planner(settings).make_plan(prompt, ctx, failed=args.action == "fix")
         if args.dry_run:
-            ui.panel("ПЛАН · ПРОСМОТР", plan.summary)
-            for step in plan.steps:
-                ui.panel(step.risk.upper(), step.command + "\n\n" + step.explanation)
-            ui.note("Режим просмотра: команды не выполнены.")
+            approve(plan, ui, mode="preview", shell=shell)
             return 0
         steps = approve(plan, ui)
         if args.command_file:

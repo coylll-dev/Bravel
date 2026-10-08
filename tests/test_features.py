@@ -28,6 +28,23 @@ class Terminal(io.StringIO):
 
 
 class FeaturesTests(unittest.TestCase):
+    def test_empty_cli_and_agent_start_chat_without_api(self):
+        for arguments in ([], ["agent"], ["agent", "--shell", "cmd"]):
+            with patch("bravel.chat.chat", return_value=0) as interactive, patch("bravel.chat.run_task") as task:
+                self.assertEqual(main(arguments), 0)
+            interactive.assert_called_once()
+            task.assert_not_called()
+
+    def test_version_flag_typo_has_suggestion_without_api(self):
+        output = io.StringIO()
+        with patch("sys.stderr", output), patch("bravel.agent.Planner.make_plan") as model:
+            with self.assertRaises(SystemExit) as error:
+                main(["--versino"])
+        self.assertEqual(error.exception.code, 2)
+        self.assertIn("--version", output.getvalue())
+        self.assertIn("Возможно", output.getvalue())
+        model.assert_not_called()
+
     def test_editor_completion_history_and_multiline_input(self):
         from prompt_toolkit import PromptSession
         from prompt_toolkit.input.defaults import create_pipe_input

@@ -18,12 +18,12 @@ from .privacy import redact
 
 SCHEMAS = {
     "games": {"description": "Installed Steam games; does not launch anything", "arguments": {}},
-    "apps": {"description": "Launchable apps discovered in PATH and standard locations, not all OS packages", "arguments": {}},
+    "apps": {"description": "Apps: Windows installed-software registry plus launchable PATH/App Paths apps; Linux desktop entries. Optional case-insensitive name/path filter. Incomplete inventory, not proof of absence", "arguments": {"query": "optional name/path substring"}},
     "system_info": {"description": "OS, CPU count, disk space for current directory", "arguments": {}},
-    "processes": {"description": "Current process names/PIDs, without command-line arguments", "arguments": {}},
+    "processes": {"description": "Current processes grouped by executable, with names/PIDs and paths when accessible, no command-line arguments. Optional name/path substring filter; names alone do not prove VPN identity", "arguments": {"query": "optional name/path substring"}},
     "network_info": {"description": "Local IP addresses and interfaces; not public Internet IP", "arguments": {}},
     "list_directory": {"description": "Directory entries, types and sizes; does not read contents", "arguments": {"path": "optional directory path"}},
-    "find_files": {"description": "Bounded filename search (depth 5, 3 seconds), no contents", "arguments": {"path": "optional root", "pattern": "filename glob, e.g. *.txt"}},
+    "find_files": {"description": "Case-insensitive file AND directory name search, depth 5, 3 seconds. Reports root and incomplete reasons; empty matches NEVER prove absence outside the checked scope", "arguments": {"path": "optional root", "pattern": "filename glob, e.g. *incy*"}},
     "read_text": {"description": "Read UTF-8 text (up to 32 KB); requires user approval, rejects credential files", "arguments": {"path": "file path"}},
     "write_text": {"description": "Create/replace UTF-8 file with full preview; requires RUN; old file copied to a new backup", "arguments": {"path": "file path", "content": "complete text, up to 8000 characters"}},
 }
@@ -41,7 +41,7 @@ def validate(call: ToolCall) -> None:
     allowed = set(SCHEMAS[call.name]["arguments"])
     if not set(call.arguments) <= allowed or any(not isinstance(value, str) for value in call.arguments.values()):
         raise ConsoleError("Неверные параметры инструмента")
-    for key in ("path", "pattern"):
+    for key in ("path", "pattern", "query"):
         if key in call.arguments and (not call.arguments[key] or len(call.arguments[key]) > 2000 or any(c in call.arguments[key] for c in "\0\r\n")):
             raise ConsoleError("Неверный путь или шаблон инструмента")
     if call.name in {"read_text", "write_text"} and not call.arguments.get("path"):
@@ -67,7 +67,7 @@ def text_path(cwd: Path, value: str) -> Path:
     return path
 
 
-def fixed_command(shell: str, command: str) -> str:
+def fixed_command(shell: str, command: str, *, output_limit: int = 32000) -> str:
     from .executor import shell_argv
     try:
         result = subprocess.run(shell_argv(shell, command), stdin=subprocess.DEVNULL, capture_output=True,
@@ -75,9 +75,27 @@ def fixed_command(shell: str, command: str) -> str:
                                 **({"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}))
         if result.returncode:
             raise ConsoleError("Не удалось прочитать системные сведения")
-        return result.stdout[:32000]
+        if len(result.stdout) > output_limit:
+            raise ConsoleError("Системные сведения превысили лимит вывода; данные не обрезаны посередине")
+        return result.stdout
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise ConsoleError("Не удалось прочитать системные сведения") from exc
+
+
+def group_processes(entries: list[dict], query: str = "") -> dict:
+    groups = {}
+    for entry in entries:
+        if query and not any(query.casefold() in str(entry.get(field, "")).casefold() for field in ("name", "executable")):
+            continue
+        identity = (entry["name"].casefold(), entry.get("executable") or "")
+        group = groups.setdefault(identity, {"name": entry["name"], "executable": entry.get("executable"), "pids": [], "count": 0})
+        group["count"] += 1
+        if len(group["pids"]) < 20:
+            group["pids"].append(entry["pid"])
+    ordered = sorted(groups.values(), key=lambda item: item["name"].casefold())
+    return {"processes": ordered[:200], "total_groups": len(ordered), "scanned_processes": len(entries),
+            "limited": len(entries) >= 2000 or len(ordered) > 200, "limit": 200, "query": query or None,
+            "path_note": "Executable path may be unavailable; names alone do not establish app purpose or active VPN"}
 
 
 def run(call: ToolCall, cwd: Path) -> dict:
@@ -88,22 +106,36 @@ def run(call: ToolCall, cwd: Path) -> dict:
         return {"scope": "Steam libraries only", "limit": 200, "games": [{"name": game.name, "app_id": game.app_id,
                  "steam_executable": str(game.executable)} for game in installed_steam_games()[:200]]}
     if call.name == "apps":
-        from .programs import installed_applications
-        return {"scope": "launchable apps in standard locations", "limit": 200, "apps": [{"name": app.name, "executable": str(app.executable)} for app in installed_applications()[:200]]}
+        from .programs import installed_applications, registered_software
+        entries = registered_software()
+        entries += [{"name": app.name, "executable": str(app.executable), "source": "launchable app"} for app in installed_applications()]
+        query = args.get("query", "").casefold()
+        entries = [entry for entry in entries if not query or any(query in str(value).casefold() for value in entry.values())]
+        return {"scope": "Windows installation registry and launchable apps" if os.name == "nt" else "PATH and Linux desktop entries",
+                "coverage_complete": False, "query": args.get("query"), "total_matches": len(entries),
+                "limited": len(entries) > 200, "limit": 200, "apps": entries[:200]}
     if call.name == "system_info":
         disk = shutil.disk_usage(cwd)
         return {"os": platform.system(), "release": platform.release(), "architecture": platform.machine(),
                 "cpu_count": os.cpu_count(), "disk_total_bytes": disk.total, "disk_free_bytes": disk.free}
     if call.name == "processes":
         if os.name == "nt":
-            return {"processes": json.loads(fixed_command("powershell", "[Console]::OutputEncoding=[Text.Encoding]::UTF8; Get-Process | Select-Object -First 200 Id,ProcessName | ConvertTo-Json -Compress"))}
-        entries = []
-        for path in list(Path("/proc").glob("[0-9]*"))[:200]:
-            try:
-                entries.append({"pid": int(path.name), "name": (path / "comm").read_text().strip()})
-            except OSError:
-                pass
-        return {"processes": entries, "limit": 200}
+            raw = fixed_command("powershell", "[Console]::OutputEncoding=[Text.Encoding]::UTF8; ConvertTo-Json -Compress -InputObject @(Get-Process | Select-Object -First 2000 Id,ProcessName,@{Name='Executable';Expression={try {$_.Path} catch {$null}}})", output_limit=512000)
+            entries = [{"pid": item["Id"], "name": item["ProcessName"], "executable": item.get("Executable")}
+                       for item in json.loads(raw)]
+        else:
+            entries = []
+            for path in list(Path("/proc").glob("[0-9]*"))[:2000]:
+                try:
+                    entry = {"pid": int(path.name), "name": (path / "comm").read_text().strip()}
+                    try:
+                        entry["executable"] = str((path / "exe").readlink())
+                    except OSError:
+                        pass
+                    entries.append(entry)
+                except OSError:
+                    pass
+        return group_processes(entries, args.get("query", ""))
     if call.name == "network_info":
         command = "[Console]::OutputEncoding=[Text.Encoding]::UTF8; Get-NetIPAddress | Select-Object -First 100 InterfaceAlias,IPAddress,AddressFamily | ConvertTo-Json -Compress" if os.name == "nt" else "ip -brief address"
         return {"local_interfaces": fixed_command("powershell" if os.name == "nt" else "bash", command)}
@@ -121,16 +153,26 @@ def run(call: ToolCall, cwd: Path) -> dict:
         deadline = time.monotonic() + 3
         if not path.is_dir():
             raise ConsoleError("Папка поиска не найдена")
-        limited = False
-        for directory, dirs, files in os.walk(path, followlinks=False):
+        reasons = set()
+        def inaccessible(error):
+            reasons.add("permission_or_io_error")
+        for directory, dirs, files in os.walk(path, followlinks=False, onerror=inaccessible):
             depth = len(Path(directory).relative_to(path).parts)
-            dirs[:] = [name for name in dirs if name not in {".git", ".venv", "node_modules"} and not (Path(directory) / name).is_symlink()] if depth < 5 else []
-            visited += len(files)
-            matches += [str(Path(directory) / name) for name in files if fnmatch.fnmatch(name, args["pattern"])]
+            allowed_dirs = [name for name in dirs if name not in {".git", ".venv", "node_modules"} and not (Path(directory) / name).is_symlink()]
+            if len(allowed_dirs) != len(dirs):
+                reasons.add("excluded_directories")
+            if depth >= 5 and allowed_dirs:
+                reasons.add("max_depth")
+            dirs[:] = sorted(allowed_dirs, key=str.casefold) if depth < 5 else []
+            visited += len(files) + len(allowed_dirs)
+            matches += [str(Path(directory) / name) for name in sorted(files + allowed_dirs, key=str.casefold)
+                        if fnmatch.fnmatchcase(name.casefold(), args["pattern"].casefold())]
             if len(matches) >= 200 or visited > 5000 or time.monotonic() > deadline:
-                limited = True
+                reasons.add("match_limit" if len(matches) >= 200 else "entry_limit" if visited > 5000 else "time_limit")
                 break
-        return {"matches": matches[:200], "limited": limited, "max_depth": 5, "skipped_directories": [".git", ".venv", "node_modules"]}
+        return {"root": str(path), "pattern": args["pattern"], "matches": matches[:200], "visited_entries": visited,
+                "limited": bool(reasons), "incomplete_reasons": sorted(reasons), "max_depth": 5,
+                "skipped_directories": [".git", ".venv", "node_modules"]}
     path = text_path(cwd, args["path"])
     if call.name == "read_text":
         import codecs

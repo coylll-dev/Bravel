@@ -49,6 +49,38 @@ def app_paths() -> list[Path]:
     return found
 
 
+def registered_software() -> list[dict]:
+    """Read installation metadata, never uninstall commands or guessed launchers."""
+    if os.name != "nt":
+        return []
+    import winreg
+    found = {}
+    for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+        for view in (winreg.KEY_WOW64_64KEY, winreg.KEY_WOW64_32KEY):
+            try:
+                with winreg.OpenKey(hive, r"Software\Microsoft\Windows\CurrentVersion\Uninstall", 0, winreg.KEY_READ | view) as parent:
+                    for index in range(min(winreg.QueryInfoKey(parent)[0], 2000)):
+                        try:
+                            with winreg.OpenKey(parent, winreg.EnumKey(parent, index)) as key:
+                                values = {}
+                                for field, label in (("DisplayName", "name"), ("DisplayVersion", "version"),
+                                                     ("Publisher", "publisher"), ("InstallLocation", "install_location")):
+                                    try:
+                                        value, _ = winreg.QueryValueEx(key, field)
+                                        if isinstance(value, str) and value.strip():
+                                            values[label] = value.strip()[:2000]
+                                    except OSError:
+                                        pass
+                                if values.get("name"):
+                                    identity = (values["name"].casefold(), values.get("version", ""), values.get("install_location", ""))
+                                    found.setdefault(identity, {**values, "source": "Windows Uninstall registry"})
+                        except OSError:
+                            continue
+            except OSError:
+                continue
+    return sorted(found.values(), key=lambda item: item["name"].casefold())
+
+
 def installed_applications() -> list[Application]:
     result = {}
     roots = [Path(os.environ[name]) for name in ("ProgramFiles", "ProgramFiles(x86)") if os.environ.get(name)]

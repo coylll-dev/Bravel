@@ -11,7 +11,7 @@ from bravel.chat import run_task
 from bravel.cli import parser
 from bravel.config import ConsoleError, Settings
 from bravel.planner import Plan, parse_plan
-from bravel.tools import ToolCall, run, validate
+from bravel.tools import ToolCall, run, validate, group_processes
 from bravel.ui import UI
 
 
@@ -109,6 +109,48 @@ class ToolTests(unittest.TestCase):
         sub = next(action for action in parser()._actions if hasattr(action, "choices") and isinstance(action.choices, dict))
         self.assertNotIn("games", sub.choices)
         self.assertNotIn("apps", sub.choices)
+
+    def test_search_finds_directory_case_insensitively_and_reports_depth_limit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            target = root / "INCY Client"
+            target.mkdir()
+            deep = root
+            for index in range(7):
+                deep = deep / str(index)
+                deep.mkdir()
+            data = run(ToolCall("find_files", {"pattern": "*incy*"}), root)
+            self.assertIn(str(target), data["matches"])
+            self.assertEqual(data["root"], str(root))
+            self.assertTrue(data["limited"])
+            self.assertIn("max_depth", data["incomplete_reasons"])
+
+    def test_app_query_includes_installation_records_without_inventing_executable(self):
+        record = {"name": "INCY", "install_location": "C:/Apps/Incy", "source": "Windows Uninstall registry"}
+        with patch("bravel.programs.registered_software", return_value=[record]), patch("bravel.programs.installed_applications", return_value=[]):
+            data = run(ToolCall("apps", {"query": "iNcY"}), Path.cwd())
+        self.assertEqual(data["apps"], [record])
+        self.assertFalse(data["coverage_complete"])
+        self.assertNotIn("executable", data["apps"][0])
+
+    def test_process_groups_keep_unknown_app_and_filter_by_path(self):
+        entries = [{"name": "chrome", "pid": index, "executable": "/opt/chrome"} for index in range(250)]
+        entries += [{"name": "incy", "pid": 900, "executable": "/opt/INCY/client"}]
+        data = group_processes(entries)
+        self.assertEqual(data["total_groups"], 2)
+        self.assertEqual(data["processes"][0]["count"], 250)
+        self.assertLessEqual(len(data["processes"][0]["pids"]), 20)
+        self.assertEqual(group_processes(entries, "INCY/client")["processes"][0]["name"], "incy")
+
+    def test_large_inventory_is_summarized_without_json_or_duplicate_list(self):
+        agent = Agent(settings=Settings(require_key=False))
+        plans = [Plan("Проверю процессы", (), (ToolCall("processes", {}),)), Plan("Найден INCY", ())]
+        data = group_processes([{"name": "incy", "pid": 123, "executable": "/opt/INCY/client"}])
+        output = io.StringIO()
+        with patch("bravel.agent.Planner.make_plan", side_effect=plans), patch("bravel.agent.run_tool", return_value=data):
+            run_task(agent, UI("never", output), "Какой клиент запущен?")
+        self.assertIn("Найден INCY", output.getvalue())
+        self.assertNotIn('"pids"', output.getvalue())
 
 
 if __name__ == "__main__":

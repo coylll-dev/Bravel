@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import difflib
 import os
 import sys
 from pathlib import Path
@@ -52,7 +53,7 @@ def parser() -> argparse.ArgumentParser:
     cmd = sub.add_parser("agent", help="Диалог с анализом результатов команд")
     cmd.add_argument("--shell", choices=("powershell", "bash", "cmd"))
     cmd.add_argument("--dry-run", action="store_true", help="Показать план без выполнения")
-    cmd.add_argument("text", nargs="+")
+    cmd.add_argument("text", nargs="*")
     return result
 
 
@@ -61,6 +62,12 @@ def main(argv: list[str] | None = None) -> int:
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
     arguments = list(sys.argv[1:] if argv is None else argv)
+    if not arguments:
+        arguments = ["chat"]
+    if arguments[0].startswith("--") and arguments[0] not in {"--help", "--version"}:
+        suggestion = difflib.get_close_matches(arguments[0], ["--help", "--version"], n=1, cutoff=0.7)
+        if suggestion:
+            parser().error(f"неизвестный параметр {arguments[0]}. Возможно, вы имели в виду {suggestion[0]}?")
     actions = {"ask", "fix", "doctor", "version", "init", "configure", "update", "rollback", "uninstall", "integration", "demo", "chat", "agent"}
     if arguments and not arguments[0].startswith("-") and arguments[0] not in actions:
         arguments.insert(0, "ask")
@@ -75,9 +82,9 @@ def main(argv: list[str] | None = None) -> int:
             agent = Agent(cwd=Path.cwd(), shell=args.shell)
             agent.mode = getattr(args, "mode", "preview" if getattr(args, "dry_run", False) else "ask")
             try:
-                if args.action == "agent":
+                if args.action == "agent" and args.text:
                     ui.banner()
-                return chat(agent, ui, plain=args.plain, session=args.session) if args.action == "chat" else run_task(agent, ui, " ".join(args.text))
+                return chat(agent, ui, plain=getattr(args, "plain", False), session=getattr(args, "session", None)) if args.action == "chat" or not args.text else run_task(agent, ui, " ".join(args.text))
             except KeyboardInterrupt:
                 agent.cancel()
                 ui.note("Остановлено пользователем.")

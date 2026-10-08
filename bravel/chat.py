@@ -76,7 +76,13 @@ def run_task(agent: Agent, ui: UI, prompt: str, *, continuation: bool = False) -
                     ui.panel("ФАЙЛ", item["output"])
                 elif item["tool"] in {"games", "apps"}:
                     entries = item["data"][item["tool"]]
-                    ui.panel("НАЙДЕНО", "\n".join(entry["name"] for entry in entries) or "В доступных местах ничего не найдено.")
+                    ui.note(f"Получено записей: {len(entries)}. Агент анализирует названия и пути.")
+                elif item["tool"] == "processes":
+                    ui.note(f"Проверено процессов: {item['data']['scanned_processes']}; групп: {item['data']['total_groups']}.")
+                elif item["tool"] == "find_files":
+                    data = item["data"]
+                    ui.note(f"Поиск в {data['root']}: найдено {len(data['matches'])}." +
+                            (" Проверка неполная: " + ", ".join(data["incomplete_reasons"]) if data["limited"] else ""))
                 else:
                     text = item["data"].get("text", item["output"])
                     ui.panel("ПОЛУЧЕННЫЕ ДАННЫЕ", text[:6000] + ("\n[Показана часть данных]" if len(text) > 6000 else ""))

@@ -12,11 +12,24 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 from .config import ConsoleError, Settings
 from .privacy import redact_data
 from .policy import read_only
+from .tools import ToolCall, validate as validate_tool
 
 
 SYSTEM_PROMPT = """You are Bravel, a careful terminal assistant. Reply in Russian.
 Produce ONLY a JSON object: {"summary": string, "steps": [{"command": string,
-"explanation": string, "risk": "low"|"medium"|"high", "check": optional string}]}.
+"explanation": string, "risk": "low"|"medium"|"high", "check": optional string}],
+"tools": optional [{"name": string, "arguments": object}]}.
+When context.agent_tools is provided, you can select these typed tools yourself.
+For installed games/apps, files, OS/network/process observations choose the
+relevant tools first, get their actual results, then answer or propose actions.
+Do not tell the user to run special Bravel inventory commands. Handle natural
+questions directly. Never invent observations or installed games/programs.
+Answer information questions with the actual requested facts/list, not just
+"the task completed". Speak plain Russian; omit internal tool/schema details.
+Use only the tools needed for the current request. Never mix tools and shell
+steps in one plan. Metadata tools run locally; text reads require approval and
+file writes require RUN with a full content preview. Credentials are excluded.
+If agent_tools is absent, omit tools. Do not invent tools or arguments.
 For a file creation or app launch include a simple read-only check when possible.
 Allowed checks: PowerShell Test-Path -LiteralPath 'path' or
 [bool](Get-Process -Name 'name' -ErrorAction SilentlyContinue);
@@ -27,8 +40,7 @@ changing facts when requested (IP, files, processes); do not reuse an old IP.
 Read verification results: observed means the stated condition was observed;
 not_observed/failed means do not claim success. It does not prove a new process.
 Use commands for the supplied OS and shell. Prefer one simple command at a time.
-The context lists Bravel's local inventory commands. Prefer these to guessed
-winget queries for installed games or apps. Never use WMIC product or
+Prefer the provided inventory tools to guessed winget queries. Never use WMIC product or
 Win32_Product: even inventory queries can trigger MSI consistency repairs.
 Command stdin is non-interactive. Avoid commands requiring input or source
 agreements; never silently add accept-agreement flags. Explain the limitation
@@ -74,6 +86,7 @@ class Step:
 class Plan:
     summary: str
     steps: tuple[Step, ...]
+    tools: tuple[ToolCall, ...] = ()
 
 
 def parse_plan(content: str, max_steps: int) -> Plan:
@@ -103,7 +116,17 @@ def parse_plan(content: str, max_steps: int) -> Plan:
              not any(read_only(check, shell) for shell in ("powershell", "cmd", "bash")))):
             raise ConsoleError("Проверка результата должна быть простой командой только для чтения")
         steps.append(Step(command, explanation, risk, check))
-    return Plan(data["summary"], tuple(steps))
+    calls = data.get("tools", [])
+    if not isinstance(calls, list) or len(calls) + len(steps) > max_steps or (calls and steps):
+        raise ConsoleError("Инструменты и команды должны быть отдельными планами в пределах лимита")
+    tools = []
+    for call in calls:
+        if not isinstance(call, dict) or set(call) != {"name", "arguments"} or not isinstance(call["name"], str):
+            raise ConsoleError("Неверный формат инструмента")
+        tool = ToolCall(call["name"], call["arguments"])
+        validate_tool(tool)
+        tools.append(tool)
+    return Plan(data["summary"], tuple(steps), tuple(tools))
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -163,7 +186,10 @@ class Planner:
             raise ConsoleError("API недоступен или истекло время ожидания") from exc
         except (ValueError, KeyError, IndexError, TypeError) as exc:
             raise ConsoleError("Неожиданный формат ответа API") from exc
-        return parse_plan(content, self.settings.max_steps)
+        plan = parse_plan(content, self.settings.max_steps)
+        if plan.tools and not context.get("agent_tools"):
+            raise ConsoleError("Для инструментов агента используйте bravel chat или обычный запрос bravel")
+        return plan
 
 
 def local_fix(command: str, context: dict) -> Plan | None:

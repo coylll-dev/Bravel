@@ -15,6 +15,7 @@ from .sessions import Sessions
 from .privacy import redact_data
 from .context import context
 from .input import reader
+from .tools import resolve_path
 
 
 HELP = """Напиши задачу обычными словами или начни с #.
@@ -52,6 +53,36 @@ def run_task(agent: Agent, ui: UI, prompt: str, *, continuation: bool = False) -
     with ui.busy("Анализирую результат…" if continuation else "Составляю план…"):
         result = agent.make_plan(prompt, continuation=continuation)
     while True:
+        if calls := result.get("tools"):
+            ui.panel("АГЕНТ", result["summary"])
+            for call in calls:
+                arguments = dict(call["arguments"])
+                if "path" in arguments:
+                    arguments["path"] = str(resolve_path(agent.cwd, arguments["path"]))
+                if call["name"] in {"read_text", "write_text"}:
+                    ui.panel("ЗАПИСЬ ФАЙЛА" if call["name"] == "write_text" else "ЧТЕНИЕ ФАЙЛА",
+                             "Путь: " + arguments["path"] + ("\n\n" + arguments["content"] if "content" in arguments else ""))
+            requires_approval = any(call["name"] in {"read_text", "write_text"} for call in calls)
+            if agent.mode == "preview" or (requires_approval and not ui.confirm(dangerous=result["dangerous"])):
+                agent.cancel()
+                ui.note("Инструменты не выполнены.")
+                return 0
+            with ui.busy("Получаю данные…"):
+                output = agent.execute(result["plan_id"], approval="RUN" if result["dangerous"] else "approve")
+            for item in output["results"]:
+                if item["exit_code"]:
+                    ui.error(item["output"])
+                elif item["tool"] == "write_text":
+                    ui.panel("ФАЙЛ", item["output"])
+                elif item["tool"] in {"games", "apps"}:
+                    entries = item["data"][item["tool"]]
+                    ui.panel("НАЙДЕНО", "\n".join(entry["name"] for entry in entries) or "В доступных местах ничего не найдено.")
+                else:
+                    text = item["data"].get("text", item["output"])
+                    ui.panel("ПОЛУЧЕННЫЕ ДАННЫЕ", text[:6000] + ("\n[Показана часть данных]" if len(text) > 6000 else ""))
+            with ui.busy("Анализирую полученные данные…"):
+                result = agent.make_plan("", continuation=True)
+            continue
         plan = Plan(result["summary"], tuple(Step(s["command"], s["explanation"], s["risk"], s.get("check", "")) for s in result["steps"]))
         steps = approve(plan, ui, mode=agent.mode, shell=agent.shell)
         if not steps:

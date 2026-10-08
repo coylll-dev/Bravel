@@ -13,7 +13,8 @@ from threading import Event, Lock
 
 from .apps import game_plan
 from .programs import launch_plan
-from .inventory import inventory_plan
+from .tools import SCHEMAS, run as run_tool
+import json
 from .policy import read_only
 from .privacy import redact_data
 from datetime import datetime, timezone
@@ -60,7 +61,7 @@ class Agent:
                 raise ConsoleError("Сначала выполните предложенный план.")
             if self.rounds >= 8:
                 raise ConsoleError("Достигнут лимит 8 циклов. Начните новую задачу.")
-            prompt = "Проанализируй результат последнего плана. Если задача закончена, ответь без команд; иначе предложи следующий шаг."
+            prompt = "Проанализируй результат последнего плана и ответь на исходный запрос пользователя фактическими данными. Если запрос был о списке или сведениях, покажи найденное, а не только сообщение об успехе. Если задача закончена, ответь без команд и инструментов; иначе предложи следующий шаг."
         else:
             prompt = prompt.strip()
             if not prompt or len(prompt) > 16000:
@@ -74,36 +75,54 @@ class Agent:
         self.history = redact_data(self.history, (settings.api_key,))
         ctx = context(self.shell)
         ctx.update(cwd=str(self.cwd), history=self.history[-12:], shell_variables_persist=False,
-                   current_time=datetime.now(timezone.utc).isoformat())
-        plan = None if continuation else inventory_plan(prompt) or game_plan(prompt, self.shell)
+                   current_time=datetime.now(timezone.utc).isoformat(), agent_tools=SCHEMAS)
+        plan = None if continuation else game_plan(prompt, self.shell)
         plan = plan or (None if continuation else launch_plan(prompt, self.shell)) or Planner(settings).make_plan(prompt, ctx)
         if continuation and any(step.command.strip().casefold() in self._failed_commands for step in plan.steps):
             raise ConsoleError("Этот план повторяет уже неудачную команду без изменений. Уточните задачу; повтор автоматически не выполняется.")
+        if continuation and any("tool:" + call.name + json.dumps(call.arguments, sort_keys=True) in self._failed_commands for call in plan.tools):
+            raise ConsoleError("Этот инструмент уже завершился ошибкой с теми же параметрами. Нужен другой способ или уточнение.")
         self.rounds += 1
         identifier = uuid.uuid4().hex
         with self._lock:
             if self._cancel.is_set():
                 raise ConsoleError("Запрос отменён")
-            self.pending = (identifier, plan) if plan.steps else None
+            self.pending = (identifier, plan) if plan.steps or plan.tools else None
         self.history.append({"role": "assistant", "summary": plan.summary,
-                             "steps": [asdict(step) for step in plan.steps]})
+                             "steps": [asdict(step) for step in plan.steps], "tools": [asdict(call) for call in plan.tools]})
         self.history = redact_data(self.history, (settings.api_key,))
         self.history = self.history[-12:]
         return {"plan_id": identifier, "summary": safe_text(plan.summary),
                 "steps": [{**asdict(step), "dangerous": dangerous(step)} for step in plan.steps],
-                "dangerous": any(dangerous(step) for step in plan.steps), "cwd": str(self.cwd)}
+                "tools": [asdict(call) for call in plan.tools],
+                "dangerous": any(dangerous(step) for step in plan.steps) or any(call.name == "write_text" for call in plan.tools), "cwd": str(self.cwd)}
 
     def execute(self, identifier: str, *, approval: str) -> dict:
         with self._lock:
             if self.pending is None or identifier != self.pending[0]:
                 raise ConsoleError("План устарел или уже выполнен. Запросите новый.")
             plan = self.pending[1]
-            required = "RUN" if any(dangerous(step) for step in plan.steps) else "approve"
+            required = "RUN" if any(dangerous(step) for step in plan.steps) or any(call.name == "write_text" for call in plan.tools) else "approve"
             if approval != required:
                 raise ConsoleError("Выполнение не подтверждено")
             self.pending = None  # A plan is a one-use capability, not supplied executable text.
             self._cancel.clear()
         results = []
+        for call in plan.tools:
+            if self._cancel.is_set():
+                break
+            try:
+                data = run_tool(call, self.cwd)
+                result = {"tool": call.name, "arguments": call.arguments, "data": data,
+                          "command": "tool:" + call.name, "output": json.dumps(data, ensure_ascii=False), "exit_code": 0}
+            except (ConsoleError, OSError, ValueError) as exc:
+                self._failed_commands.add("tool:" + call.name + json.dumps(call.arguments, sort_keys=True))
+                result = {"tool": call.name, "command": "tool:" + call.name, "output": safe_text(str(exc)), "exit_code": 1}
+            result.update(cancelled=self._cancel.is_set(), timed_out=False, truncated=False,
+                          observed_at=datetime.now(timezone.utc).isoformat())
+            results.append(result)
+            if result["exit_code"]:
+                break
         for step in plan.steps:
             if step.check and not read_only(step.check, self.shell):
                 raise ConsoleError("Проверка результата не подходит для текущей оболочки")

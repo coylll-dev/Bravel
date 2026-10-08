@@ -8,7 +8,6 @@ from pathlib import Path
 from . import __version__
 from .apps import game_plan
 from .programs import launch_plan
-from .inventory import inventory_plan, listing
 from .config import ConsoleError, Settings, PROVIDERS, config_path, template
 from .context import context, shell_name
 from .executor import approve, execute, script_for
@@ -32,8 +31,6 @@ def parser() -> argparse.ArgumentParser:
     cmd = sub.add_parser("doctor", help="Проверить настройки, PATH и подключение оболочки")
     cmd.add_argument("--api", action="store_true", help="Также проверить API и модель коротким запросом")
     sub.add_parser("version", help="Показать версию")
-    sub.add_parser("games", help="Список игр Steam без API")
-    sub.add_parser("apps", help="Найденные приложения без API")
     cmd = sub.add_parser("init", help="Создать шаблон конфигурации")
     cmd.add_argument("--path", type=Path, help="Путь к новому .env")
     cmd.add_argument("--provider", choices=tuple(PROVIDERS), default="openai")
@@ -64,7 +61,7 @@ def main(argv: list[str] | None = None) -> int:
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
     arguments = list(sys.argv[1:] if argv is None else argv)
-    actions = {"ask", "fix", "doctor", "version", "games", "apps", "init", "configure", "update", "rollback", "uninstall", "integration", "demo", "chat", "agent"}
+    actions = {"ask", "fix", "doctor", "version", "init", "configure", "update", "rollback", "uninstall", "integration", "demo", "chat", "agent"}
     if arguments and not arguments[0].startswith("-") and arguments[0] not in actions:
         arguments.insert(0, "ask")
     args = parser().parse_args(arguments)
@@ -72,9 +69,6 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.action == "version":
             print(__version__)
-            return 0
-        if args.action in {"games", "apps"}:
-            ui.panel("STEAM" if args.action == "games" else "ПРИЛОЖЕНИЯ", listing(args.action))
             return 0
         if args.action in {"agent", "chat"}:
             from .chat import chat, run_task
@@ -127,9 +121,15 @@ def main(argv: list[str] | None = None) -> int:
             prompt = prompt.removeprefix("#").strip()
         if not prompt or len(prompt) > 16000:
             raise ConsoleError("Запрос должен содержать от 1 до 16000 символов")
+        if args.action == "ask" and not args.emit_command and not args.command_file:
+            from .chat import run_task
+            agent = Agent(cwd=Path.cwd(), shell=shell, settings=settings)
+            agent.mode = "preview" if args.dry_run else "ask"
+            ui.banner()
+            return run_task(agent, ui, prompt)
         ui.banner()
         ctx = context(shell)
-        plan = local_fix(prompt, ctx) if args.action == "fix" else inventory_plan(prompt) or game_plan(prompt, shell) or launch_plan(prompt, shell)
+        plan = local_fix(prompt, ctx) if args.action == "fix" else game_plan(prompt, shell) or launch_plan(prompt, shell)
         if plan:
             ui.note("Результат найден локально — запрос к API не нужен.")
         else:
